@@ -1,3 +1,14 @@
+// prisma/schema.prisma
+// SMB OS — Core data model (SQLite now → Postgres later)
+// Terms:
+// - Tenant: a customer company; their data is isolated
+// - Module: a feature bundle (inventory, invoices, etc.)
+// - Entitlement: “Tenant X can use Module Y” (+ optional limits)
+// Notes:
+// - Soft delete via deletedAt on Tenant/User where sensible
+// - Audit every critical admin action in AuditLog
+// - Email unique per tenant (not globally)
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,3 +18,131 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// ---- Enums ----
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+/// ---- Models ----
+
+model Tenant {
+  id             String       @id @default(cuid())
+  name           String
+  status         TenantStatus @default(ACTIVE)
+  /// Manual activation end date (extend on cash/wire renewal)
+  activatedUntil DateTime?
+  /// Default UI language for this tenant (e.g., "en", "ar")
+  defaultLocale  String       @default("en")
+
+  // Soft delete
+  deletedAt DateTime?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users        User[]
+  entitlements Entitlement[]
+  auditLogs    AuditLog[]
+
+  @@index([status])
+  @@index([activatedUntil])
+  @@map("Tenants")
+}
+
+model User {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  name         String
+  email        String
+  passwordHash String
+  role         UserRole @default(MEMBER)
+
+  /// Optional per-user language override (falls back to tenant default)
+  localeOverride String?
+
+  // Soft delete
+  deletedAt DateTime?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Audit relation (actorUserId)
+  auditLogs AuditLog[]
+
+  // Email is unique within a tenant
+  @@unique([tenantId, email])
+  @@index([tenantId, role])
+  @@map("Users")
+}
+
+model Module {
+  /// Stable key (e.g., "inventory", "invoices")
+  key         String  @id
+  name        String
+  description String?
+
+  createdAt DateTime @default(now())
+
+  entitlements Entitlement[]
+
+  @@map("Modules")
+}
+
+model Entitlement {
+  /// Composite key: one row per (tenant, module)
+  tenantId  String
+  moduleKey String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  module Module @relation(fields: [moduleKey], references: [key])
+
+  /// Server-side gate: if false/missing → return 403 & hide related UI
+  isEnabled Boolean @default(false)
+
+  /// Optional JSON blob for limits/feature flags (e.g., { "maxUsers": 5 })
+  limitsJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([tenantId, moduleKey])
+  @@index([tenantId])
+  @@index([moduleKey])
+  @@map("Entitlements")
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  /// The user who performed the action (admin/member). Can be null for system actions.
+  actorUserId String?
+  actor       User?   @relation(fields: [actorUserId], references: [id])
+
+  /// Short verb, e.g., "TENANT_CREATE", "ENTITLEMENT_TOGGLE", "ACTIVATION_EXTEND"
+  action String
+
+  /// Additional context (e.g., old/new values, request IP) — arbitrary JSON
+  metaJson Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([actorUserId])
+  @@index([action])
+  @@map("AuditLog")
+}
