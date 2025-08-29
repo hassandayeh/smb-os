@@ -38,6 +38,70 @@ function notNull<T>(v: T | null | undefined): v is T {
   return v != null;
 }
 
+/* -------------------- PAGINATION (ADDED) -------------------- */
+const PAGE_SIZE = 20;
+
+function getPage(sp: Record<string, string | string[] | undefined>) {
+  const raw = getParam(sp, "page");
+  const n = Number(raw || "1");
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function withPage(sp: Record<string, string | string[] | undefined>, page: number) {
+  const usp = new URLSearchParams(toSearchString(sp));
+  if (page <= 1) usp.delete("page");
+  else usp.set("page", String(page));
+  return `?${usp.toString()}`;
+}
+
+function PaginationFooter({
+  page,
+  totalPages,
+  searchParams,
+}: {
+  page: number;
+  totalPages: number;
+  searchParams: Record<string, string | string[] | undefined>;
+}) {
+  const prev = Math.max(1, page - 1);
+  const next = Math.min(totalPages, page + 1);
+
+  const btn =
+    "inline-flex items-center rounded-xl border px-3 py-1.5 text-sm hover:bg-muted";
+
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <div className="text-sm text-muted-foreground">
+        Page <span className="font-medium">{page}</span> of{" "}
+        <span className="font-medium">{totalPages}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Link className={btn} href={withPage(searchParams, 1)} aria-disabled={page === 1}>
+          « First
+        </Link>
+        <Link className={btn} href={withPage(searchParams, prev)} aria-disabled={page === 1}>
+          ‹ Prev
+        </Link>
+        <Link
+          className={btn}
+          href={withPage(searchParams, next)}
+          aria-disabled={page === totalPages}
+        >
+          Next ›
+        </Link>
+        <Link
+          className={btn}
+          href={withPage(searchParams, totalPages)}
+          aria-disabled={page === totalPages}
+        >
+          Last »
+        </Link>
+      </div>
+    </div>
+  );
+}
+/* ------------------ END PAGINATION (ADDED) ------------------ */
+
 export default async function AuditListPage({
   searchParams,
 }: {
@@ -127,10 +191,20 @@ export default async function AuditListPage({
     ...(tenantIdsFilter ? { tenantId: { in: tenantIdsFilter } } : {}),
   };
 
+  /* -------------------- PAGINATION (ADDED) -------------------- */
+  const page = getPage(searchParams);
+  const skip = (page - 1) * PAGE_SIZE;
+  const take = PAGE_SIZE;
+
+  const totalCount = await prisma.auditLog.count({ where });
+  /* ------------------ END PAGINATION (ADDED) ------------------ */
+
   const entries = await prisma.auditLog.findMany({
     where,
     orderBy: { createdAt: "desc" },
-    take: 100,
+    // take: 100,  // ← removed in favor of skip/take
+    skip,          // (ADDED)
+    take,          // (ADDED)
     select: {
       id: true,
       action: true,
@@ -165,6 +239,10 @@ export default async function AuditListPage({
 
   const tenantNameById = new Map(tenants.map((t) => [t.id, t.name]));
   const userNameById = new Map(users.map((u) => [u.id, u.name]));
+
+  /* -------------------- PAGINATION (ADDED) -------------------- */
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  /* ------------------ END PAGINATION (ADDED) ------------------ */
 
   return (
     <div className="p-6 space-y-4">
@@ -218,6 +296,10 @@ export default async function AuditListPage({
           </tbody>
         </table>
       </div>
+
+      {/* -------------------- PAGINATION (ADDED) -------------------- */}
+      <PaginationFooter page={page} totalPages={totalPages} searchParams={searchParams} />
+      {/* ------------------ END PAGINATION (ADDED) ------------------ */}
     </div>
   );
 }

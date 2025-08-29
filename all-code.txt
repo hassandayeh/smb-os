@@ -9039,41 +9039,39 @@ export function formatAuditAction(
 
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 
 export type AuditFiltersState = {
   tenant: string;
-  q: string;
-  from: string; // yyyy-mm-dd
-  to: string;   // yyyy-mm-dd
-  action?: string; // normalized prefix (e.g., "entitlement")
+  q: string;        // kept for compatibility with callers but unused now
+  from: string;     // yyyy-mm-dd
+  to: string;       // yyyy-mm-dd
+  action?: string;  // normalized prefix (e.g., "entitlement")
 };
 
 export default function Filters({ initial }: { initial: AuditFiltersState }) {
   const router = useRouter();
   const pathname = usePathname();
-  const sp = useSearchParams();
+  useSearchParams(); // keep hook parity (even if unused directly)
 
   // Local controlled state (prevents cursor jumps)
   const [tenant, setTenant] = useState(initial.tenant ?? "");
-  const [q, setQ] = useState(initial.q ?? "");
   const [from, setFrom] = useState(initial.from ?? "");
   const [to, setTo] = useState(initial.to ?? "");
   const [action, setAction] = useState(initial.action ?? "");
 
   // Refs to keep focus at end while typing
   const tenantRef = useRef<HTMLInputElement | null>(null);
-  const qRef = useRef<HTMLInputElement | null>(null);
 
   // Build querystring from current local state
   const qs = useMemo(() => {
     const usp = new URLSearchParams();
     if (tenant) usp.set("tenant", tenant);
-    if (q) usp.set("q", q);
     if (from) usp.set("from", from);
     if (to) usp.set("to", to);
     if (action) usp.set("action", action);
     return usp.toString();
-  }, [tenant, q, from, to, action]);
+  }, [tenant, from, to, action]);
 
   // Debounced auto-apply (300ms)
   useEffect(() => {
@@ -9081,16 +9079,11 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
       startTransition(() => {
         router.replace(qs ? `${pathname}?${qs}` : pathname);
       });
-      // Keep cursor at end for the two text inputs
+      // Keep cursor at end for the tenant text input
       const t = tenantRef.current;
       if (t && document.activeElement === t) {
         const end = t.value.length;
         t.setSelectionRange(end, end);
-      }
-      const qx = qRef.current;
-      if (qx && document.activeElement === qx) {
-        const end = qx.value.length;
-        qx.setSelectionRange(end, end);
       }
     }, 300);
     return () => clearTimeout(handle);
@@ -9105,7 +9098,6 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
 
   const onClear = () => {
     setTenant("");
-    setQ("");
     setFrom("");
     setTo("");
     setAction("");
@@ -9116,9 +9108,20 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
     setTimeout(() => tenantRef.current?.focus(), 0);
   };
 
+  // Build Export CSV URL from current state (matches the export API)
+  const exportUrl = useMemo(() => {
+    const p = new URLSearchParams();
+    if (tenant) p.set("qTenant", tenant);
+    if (from) p.set("from", from);
+    if (to) p.set("to", to);
+    if (action) p.set("action", action);
+    const qs = p.toString();
+    return `/api/admin/audit/export${qs ? `?${qs}` : ""}`;
+  }, [tenant, from, to, action]);
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-      {/* Tenant: ID or Name (client-controlled; server filters by ID contains) */}
+      {/* Tenant: ID or Name */}
       <input
         ref={tenantRef}
         className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
@@ -9127,7 +9130,7 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
         onChange={(e) => setTenant(e.target.value)}
       />
 
-      {/* Action search → dropdown */}
+      {/* Action dropdown */}
       <select
         className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
         value={action}
@@ -9140,15 +9143,6 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
         <option value="tenant.update">Tenant update</option>
         <option value="user.">User actions</option>
       </select>
-
-      {/* Free text (kept if you want to search within action text or id) */}
-      <input
-        ref={qRef}
-        className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
-        placeholder='e.g. "entitlement.updated"'
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
 
       {/* Date range */}
       <input
@@ -9163,6 +9157,9 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
         value={to}
         onChange={(e) => setTo(e.target.value)}
       />
+
+      {/* Spacer to keep 5-column grid balanced */}
+      <div />
 
       {/* Actions row */}
       <div className="col-span-full flex items-center gap-2">
@@ -9180,6 +9177,16 @@ export default function Filters({ initial }: { initial: AuditFiltersState }) {
         >
           Clear
         </button>
+
+        {/* Export CSV (respects current filters) */}
+        <Link href={exportUrl} prefetch={false} target="_blank" rel="noopener">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Export CSV
+          </button>
+        </Link>
       </div>
     </div>
   );
@@ -9413,25 +9420,16 @@ export default async function AuditListPage({
 }
 
 function Header({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
-  const qs = toSearchString(searchParams);
-  const exportHref = `/api/admin/audit/export${qs ? `?${qs}` : ""}`;
+  // Legacy export removed; keep a clean header with Back to Admin only.
   return (
     <div className="flex items-center justify-between gap-2">
       <h1 className="text-2xl font-bold">Audit Log</h1>
-      <div className="flex items-center gap-2">
-        <Link
-          href={exportHref}
-          className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
-        >
-          Export CSV (filtered)
-        </Link>
-        <Link
-          href="/admin"
-          className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
-        >
-          Back to Admin
-        </Link>
-      </div>
+      <Link
+        href="/admin"
+        className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+      >
+        Back to Admin
+      </Link>
     </div>
   );
 }
@@ -11422,6 +11420,156 @@ async function safeText(res: Response) {
     return null;
   }
 }
+
+----- FILE: .\src\app\api\admin\audit\export\route.ts -----
+
+// src/app/api/admin/audit/export/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+/**
+ * CSV columns:
+ * Time | Tenant ID | Tenant Name | Action | Actor | Details
+ *
+ * Query params supported (match the Audit page filters):
+ * - qTenant: partial, matches tenantId or tenant name
+ * - qActor: partial, matches actorUserId
+ * - action: exact match of action key (if provided)
+ * - from: ISO date string (inclusive)
+ * - to: ISO date string (inclusive; we expand to end-of-day)
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+
+    const qTenant = (searchParams.get("qTenant") || "").trim();
+    const qActor = (searchParams.get("qActor") || "").trim();
+    const action = (searchParams.get("action") || "").trim();
+    const from = (searchParams.get("from") || "").trim();
+    const to = (searchParams.get("to") || "").trim();
+
+    // Step A — resolve tenant-name filtering:
+    // If qTenant is provided, we want to match EITHER:
+    //  - auditLog.tenantId contains qTenant
+    //  - OR tenant.name contains qTenant  → in that case we fetch matching tenant IDs first
+    let tenantIdsFromName: string[] = [];
+    if (qTenant) {
+      const byName = await prisma.tenant.findMany({
+        where: { name: { contains: qTenant } }, // SQLite case-insensitive already handled by collation; if not, adjust
+        select: { id: true },
+      });
+      tenantIdsFromName = byName.map((t) => t.id);
+    }
+
+    // Step B — build where clause
+    const where: any = {};
+
+    // Date range
+    if (from || to) {
+      where.createdAt = {};
+      if (from) {
+        const fromDate = new Date(from);
+        if (!isNaN(+fromDate)) where.createdAt.gte = fromDate;
+      }
+      if (to) {
+        const toDate = new Date(to);
+        if (!isNaN(+toDate)) {
+          toDate.setHours(23, 59, 59, 999); // end-of-day
+          where.createdAt.lte = toDate;
+        }
+      }
+      if (Object.keys(where.createdAt).length === 0) delete where.createdAt;
+    }
+
+    // Action exact match
+    if (action) where.action = action;
+
+    // qTenant — partial on tenantId OR by resolved tenant IDs from name
+    if (qTenant) {
+      const or: any[] = [{ tenantId: { contains: qTenant } }];
+      if (tenantIdsFromName.length) {
+        or.push({ tenantId: { in: tenantIdsFromName } });
+      }
+      where.OR = or;
+    }
+
+    // qActor — partial on actorUserId
+    if (qActor) {
+      // If we already created OR above, extend it; otherwise add direct filter
+      if (where.OR) {
+        (where.OR as any[]).push({ actorUserId: { contains: qActor } });
+      } else {
+        where.actorUserId = { contains: qActor };
+      }
+    }
+
+    // Step C — fetch logs (no invalid includes)
+    const rows = await prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Step D — map tenantId → tenantName (for CSV column + display)
+    const uniqueTenantIds = Array.from(new Set(rows.map((r) => r.tenantId).filter(Boolean)));
+    const tenants =
+      uniqueTenantIds.length === 0
+        ? []
+        : await prisma.tenant.findMany({
+            where: { id: { in: uniqueTenantIds } },
+            select: { id: true, name: true },
+          });
+    const tenantNameById = new Map(tenants.map((t) => [t.id, t.name ?? ""]));
+
+    // Step E — compose CSV
+    const header = [
+      "Time",
+      "Tenant ID",
+      "Tenant Name",
+      "Action",
+      "Actor",
+      "Details",
+    ];
+
+    const escapeCsv = (val: any) => {
+      if (val === null || val === undefined) return "";
+      const s =
+        typeof val === "string" ? val : typeof val === "object" ? JSON.stringify(val) : String(val);
+      const needsQuotes = /[",\n]/.test(s);
+      const escaped = s.replace(/"/g, '""');
+      return needsQuotes ? `"${escaped}"` : escaped;
+    };
+
+    const lines = rows.map((r) => {
+      const actor = r.actorUserId ?? "";
+      const tenantName = tenantNameById.get(r.tenantId) ?? "";
+      return [
+        r.createdAt?.toISOString() ?? "",
+        r.tenantId ?? "",
+        tenantName,
+        r.action ?? "",
+        actor,
+        r.metaJson ? JSON.stringify(r.metaJson) : "",
+      ]
+        .map(escapeCsv)
+        .join(",");
+    });
+
+    const csv = [header.join(","), ...lines].join("\n");
+
+    return new NextResponse(csv, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="audit-log-export.csv"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (err: any) {
+    console.error("Audit CSV export failed:", err);
+    return NextResponse.json({ error: "Failed to export CSV" }, { status: 500 });
+  }
+}
+
 
 ----- FILE: .\src\app\api\admin\tenants\route.ts -----
 

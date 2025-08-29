@@ -53,6 +53,69 @@ const sortOptions: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "name_desc", label: "Name Z → A" },
 ] as const;
 
+/* -------------------- PAGINATION (ADDED) -------------------- */
+const PAGE_SIZE = 20;
+
+function getPage(sp?: Record<string, string | string[] | undefined>) {
+  const raw = typeof sp?.page === "string" ? sp.page : "";
+  const n = Number(raw || "1");
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function PaginationFooter({
+  page,
+  totalPages,
+  q,
+  sort,
+}: {
+  page: number;
+  totalPages: number;
+  q: string;
+  sort: SortKey;
+}) {
+  const makeHref = (p: number) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (sort) params.set("sort", sort);
+    if (p > 1) params.set("page", String(p));
+    const qs = params.toString();
+    return qs ? `?${qs}` : "?";
+  };
+
+  const prev = Math.max(1, page - 1);
+  const next = Math.min(totalPages, page + 1);
+  const btn =
+    "inline-flex items-center rounded-md border px-3 py-1.5 text-sm hover:bg-muted";
+
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <div className="text-sm text-muted-foreground">
+        Page <span className="font-medium">{page}</span> of{" "}
+        <span className="font-medium">{totalPages}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Link className={btn} href={makeHref(1)} aria-disabled={page === 1}>
+          « First
+        </Link>
+        <Link className={btn} href={makeHref(prev)} aria-disabled={page === 1}>
+          ‹ Prev
+        </Link>
+        <Link className={btn} href={makeHref(next)} aria-disabled={page === totalPages}>
+          Next ›
+        </Link>
+        <Link
+          className={btn}
+          href={makeHref(totalPages)}
+          aria-disabled={page === totalPages}
+        >
+          Last »
+        </Link>
+      </div>
+    </div>
+  );
+}
+/* ------------------ END PAGINATION (ADDED) ------------------ */
+
 export default async function TenantsAdminPage({
   searchParams,
 }: {
@@ -77,9 +140,19 @@ export default async function TenantsAdminPage({
       }
     : undefined;
 
+  /* -------------------- PAGINATION (ADDED) -------------------- */
+  const page = getPage(searchParams);
+  const skip = (page - 1) * PAGE_SIZE;
+  const take = PAGE_SIZE;
+  const totalCount = await prisma.tenant.count({ where });
+  /* ------------------ END PAGINATION (ADDED) ------------------ */
+
   const tenants = await prisma.tenant.findMany({
     where,
     orderBy: getOrder(sort),
+    /* PAGINATION (ADDED) */
+    skip,
+    take,
   });
 
   // Build export href preserving current q/sort
@@ -95,6 +168,10 @@ export default async function TenantsAdminPage({
     value: o.value,
     label: o.label,
   }));
+
+  /* -------------------- PAGINATION (ADDED) -------------------- */
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  /* ------------------ END PAGINATION (ADDED) ------------------ */
 
   return (
     <div className="mx-auto max-w-6xl p-4">
@@ -197,6 +274,10 @@ export default async function TenantsAdminPage({
           </tbody>
         </table>
       </div>
+
+      {/* -------------------- PAGINATION (ADDED) -------------------- */}
+      <PaginationFooter page={page} totalPages={totalPages} q={q} sort={sort} />
+      {/* ------------------ END PAGINATION (ADDED) ------------------ */}
     </div>
   );
 }
