@@ -107,6 +107,15 @@ export default async function TenantsAdminPage({
             sortInitial={sort}
             sortOptions={sortOptionsForUI}
           />
+
+          {/* Admin Console button */}
+          <Link
+            href="/admin"
+            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+          >
+            Admin Console
+          </Link>
+
           <Link
             href={exportHref}
             className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"

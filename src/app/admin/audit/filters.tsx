@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type Props = {
@@ -17,7 +17,7 @@ export default function AuditFilters({ pageSize = 20 }: Props) {
   const [from, setFrom] = useState(sp.get("from") ?? "");
   const [to, setTo] = useState(sp.get("to") ?? "");
 
-  // Submit via GET by rebuilding the URL with query params
+  // Build and navigate to URL with filters (GET)
   function apply() {
     const params = new URLSearchParams();
     if (tenantId) params.set("tenantId", tenantId);
@@ -26,11 +26,11 @@ export default function AuditFilters({ pageSize = 20 }: Props) {
     if (to) params.set("to", to);
     // reset to first page when filters change
     params.set("page", "1");
-    router.push(`/admin/audit?${params.toString()}`);
+    router.replace(`/admin/audit?${params.toString()}`);
   }
 
   function clearAll() {
-    router.push("/admin/audit?page=1");
+    router.replace("/admin/audit?page=1");
     setTenantId("");
     setAction("");
     setFrom("");
@@ -44,6 +44,19 @@ export default function AuditFilters({ pageSize = 20 }: Props) {
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, action, from, to]);
+
+  // Debounced auto-apply after 500ms; skip initial mount
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true;
+      return;
+    }
+    const t = setTimeout(() => apply(), 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, action, from, to]);
 
   return (

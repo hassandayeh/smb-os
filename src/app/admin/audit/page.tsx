@@ -34,7 +34,8 @@ export default async function AuditLogPage({
 
   // Build Prisma where
   const where: any = {};
-  if (tenantId) where.tenantId = tenantId; // exact match (SQLite)
+  // Partial match for tenantId (SQLite: case-sensitive contains)
+  if (tenantId) where.tenantId = { contains: tenantId };
   if (action) where.action = { contains: action }; // SQLite: case-sensitive contains
 
   if (from || to) {
@@ -85,12 +86,20 @@ export default async function AuditLogPage({
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Audit Log</h1>
-        <a
-          href={exportHref}
-          className="rounded-md border px-3 py-2 text-sm hover:bg-muted/40"
-        >
-          Export CSV
-        </a>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin"
+            className="rounded-md border px-3 py-2 text-sm hover:bg-muted/40"
+          >
+            Admin Console
+          </Link>
+          <a
+            href={exportHref}
+            className="rounded-md border px-3 py-2 text-sm hover:bg-muted/40"
+          >
+            Export CSV
+          </a>
+        </div>
       </div>
 
       {/* Filters */}

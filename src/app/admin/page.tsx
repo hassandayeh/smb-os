@@ -20,7 +20,7 @@ export default function AdminIndex() {
           </p>
         </Link>
 
-        {/* Tenants (link to your existing /admin/tenants list) */}
+        {/* Tenants (tenant-centric management) */}
         <Link
           href="/admin/tenants"
           className="rounded-xl border p-4 transition-colors hover:bg-muted/40"
@@ -32,16 +32,15 @@ export default function AdminIndex() {
           </p>
         </Link>
 
-        {/* Entitlements (placeholder for now) */}
+        {/* Modules (module-centric management; routes to /admin/entitlements) */}
         <Link
           href="/admin/entitlements"
-          className="pointer-events-none rounded-xl border p-4 opacity-50"
-          aria-disabled
+          className="rounded-xl border p-4 transition-colors hover:bg-muted/40"
         >
           <div className="mb-1 text-sm text-muted-foreground">Access</div>
-          <div className="text-base font-medium">Entitlements</div>
+          <div className="text-base font-medium">Modules</div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Toggle module access per tenant. (Coming next)
+            Manage tenant access by module.
           </p>
         </Link>
       </div>

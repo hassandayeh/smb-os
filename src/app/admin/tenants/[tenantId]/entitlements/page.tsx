@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 
@@ -20,9 +20,13 @@ export default function ManageEntitlementsPage() {
   // preserve q/sort if present
   const q = sp.get("q") ?? "";
   const sort = sp.get("sort") ?? "";
-  const qs = new URLSearchParams();
-  if (q) qs.set("q", q);
-  if (sort) qs.set("sort", sort);
+  const qs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (q) p.set("q", q);
+    if (sort) p.set("sort", sort);
+    return p;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, sort]);
   const qsStr = qs.toString();
   const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : `/admin/tenants`;
   const viewTenantHref = qsStr
@@ -33,6 +37,11 @@ export default function ManageEntitlementsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // per-row transient UI state
+  const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
+  const [rowErrors, setRowErrors] = useState<Record<string, string | null>>({});
+  const [rowSaved, setRowSaved] = useState<Record<string, boolean>>({});
+
   async function load(tid: string) {
     setLoading(true);
     setError(null);
@@ -40,7 +49,7 @@ export default function ManageEntitlementsPage() {
       const res = await fetch(`/api/admin/tenants/${tid}/entitlements`, {
         cache: "no-store",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({} as any));
 
       const items: unknown = Array.isArray((data as any)?.items)
         ? (data as any).items
@@ -64,6 +73,7 @@ export default function ManageEntitlementsPage() {
       }));
 
       setRows(mapped);
+      setRowErrors({});
     } catch (err: any) {
       setError(err?.message || "Failed to load entitlements");
     } finally {
@@ -79,12 +89,67 @@ export default function ManageEntitlementsPage() {
   const btnClass =
     "inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted";
 
+  async function toggle(moduleKey: string, next: boolean) {
+    // optimistic update
+    setRows((prev) =>
+      prev.map((r) =>
+        r.moduleKey === moduleKey ? { ...r, isEnabled: next } : r
+      )
+    );
+    setRowErrors((prev) => ({ ...prev, [moduleKey]: null }));
+    setRowSaved((prev) => ({ ...prev, [moduleKey]: false }));
+    setSavingKeys((prev) => new Set(prev).add(moduleKey));
+
+    try {
+      const res = await fetch(`/api/admin/tenants/${tenantId}/entitlements`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moduleKey, isEnabled: next }),
+      });
+
+      if (!res.ok) {
+        const msg = await safeText(res);
+        throw new Error(msg || `Failed to update ${moduleKey}`);
+      }
+
+      // mark as saved (show brief success) and refresh from server to ensure truth
+      setRowSaved((prev) => ({ ...prev, [moduleKey]: true }));
+      // auto-hide "Saved" after 1.5s
+      setTimeout(() => {
+        setRowSaved((prev) => ({ ...prev, [moduleKey]: false }));
+      }, 1500);
+
+      // soft refresh rows to reflect authoritative server state
+      load(tenantId);
+    } catch (e: any) {
+      // rollback
+      setRows((prev) =>
+        prev.map((r) =>
+          r.moduleKey === moduleKey ? { ...r, isEnabled: !next } : r
+        )
+      );
+      setRowErrors((prev) => ({
+        ...prev,
+        [moduleKey]: e?.message || "Failed to update",
+      }));
+    } finally {
+      setSavingKeys((prev) => {
+        const n = new Set(prev);
+        n.delete(moduleKey);
+        return n;
+      });
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Manage Entitlements</h1>
 
         <div className="flex items-center gap-2">
+          <Link href="/admin" className={btnClass}>
+            Admin Console
+          </Link>
           <Link href={backToListHref} className={btnClass}>
             Back to list
           </Link>
@@ -123,23 +188,61 @@ export default function ManageEntitlementsPage() {
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
-                  <tr key={r.moduleKey} className="border-t">
-                    <td className="px-3 py-2 font-medium">
-                      {r.name}{" "}
-                      <span className="text-muted-foreground">
-                        ({r.moduleKey})
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">{r.description || "—"}</td>
-                    <td className="px-3 py-2">{r.isEnabled ? "On" : "Off"}</td>
-                    <td className="px-3 py-2">
-                      <pre className="text-xs bg-gray-50 border rounded p-2 max-w-[40ch] overflow-x-auto">
-                        {r.limitsJson ? JSON.stringify(r.limitsJson) : "—"}
-                      </pre>
-                    </td>
-                  </tr>
-                ))
+                rows.map((r) => {
+                  const saving = savingKeys.has(r.moduleKey);
+                  const rowError = rowErrors[r.moduleKey] ?? null;
+                  const saved = rowSaved[r.moduleKey] ?? false;
+
+                  return (
+                    <tr key={r.moduleKey} className="border-t">
+                      <td className="px-3 py-2 font-medium">
+                        {r.name}{" "}
+                        <span className="text-muted-foreground">
+                          ({r.moduleKey})
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">{r.description || "—"}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <label className="relative inline-flex cursor-pointer items-center">
+                            <input
+                              type="checkbox"
+                              className="peer sr-only"
+                              checked={r.isEnabled}
+                              disabled={saving}
+                              onChange={(e) =>
+                                toggle(r.moduleKey, e.target.checked)
+                              }
+                              aria-label={`Toggle ${r.moduleKey}`}
+                            />
+                            <div className="peer h-5 w-9 rounded-full bg-gray-300 transition peer-checked:bg-green-500 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-offset-2" />
+                            <div className="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition peer-checked:translate-x-4" />
+                          </label>
+                          {saving && (
+                            <span className="text-xs text-muted-foreground">
+                              Saving…
+                            </span>
+                          )}
+                          {saved && !saving && !rowError && (
+                            <span className="text-xs text-green-600">
+                              Saved
+                            </span>
+                          )}
+                          {rowError && (
+                            <span className="text-xs text-red-600">
+                              {rowError}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <pre className="text-xs bg-gray-50 border rounded p-2 max-w-[40ch] overflow-x-auto">
+                          {r.limitsJson ? JSON.stringify(r.limitsJson) : "—"}
+                        </pre>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -147,4 +250,13 @@ export default function ManageEntitlementsPage() {
       )}
     </div>
   );
+}
+
+async function safeText(res: Response) {
+  try {
+    const t = await res.text();
+    return t?.slice(0, 200);
+  } catch {
+    return null;
+  }
 }
