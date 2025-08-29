@@ -1,111 +1,157 @@
 // src/app/admin/audit/filters.tsx
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, startTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 
 export type AuditFiltersState = {
-  tenant?: string; // id OR name (partial)
-  action?: string;
-  from?: string;   // yyyy-mm-dd
-  to?: string;     // yyyy-mm-dd
+  tenant: string;
+  q: string;        // kept for compatibility with callers but unused now
+  from: string;     // yyyy-mm-dd
+  to: string;       // yyyy-mm-dd
+  action?: string;  // normalized prefix (e.g., "entitlement")
 };
 
-export default function AuditFilters({ initial }: { initial: AuditFiltersState }) {
-  const formRef = useRef<HTMLFormElement | null>(null);
+export default function Filters({ initial }: { initial: AuditFiltersState }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  useSearchParams(); // keep hook parity (even if unused directly)
 
-  // Debounced auto-submit on input/change
+  // Local controlled state (prevents cursor jumps)
+  const [tenant, setTenant] = useState(initial.tenant ?? "");
+  const [from, setFrom] = useState(initial.from ?? "");
+  const [to, setTo] = useState(initial.to ?? "");
+  const [action, setAction] = useState(initial.action ?? "");
+
+  // Refs to keep focus at end while typing
+  const tenantRef = useRef<HTMLInputElement | null>(null);
+
+  // Build querystring from current local state
+  const qs = useMemo(() => {
+    const usp = new URLSearchParams();
+    if (tenant) usp.set("tenant", tenant);
+    if (from) usp.set("from", from);
+    if (to) usp.set("to", to);
+    if (action) usp.set("action", action);
+    return usp.toString();
+  }, [tenant, from, to, action]);
+
+  // Debounced auto-apply (300ms)
   useEffect(() => {
-    const form = formRef.current;
-    if (!form) return;
+    const handle = setTimeout(() => {
+      startTransition(() => {
+        router.replace(qs ? `${pathname}?${qs}` : pathname);
+      });
+      // Keep cursor at end for the tenant text input
+      const t = tenantRef.current;
+      if (t && document.activeElement === t) {
+        const end = t.value.length;
+        t.setSelectionRange(end, end);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [qs, pathname, router]);
 
-    let timer: any;
-    const handler = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (form.requestSubmit) form.requestSubmit();
-        else form.submit();
-      }, 350);
-    };
+  // Manual Apply (instant), for users who prefer button
+  const onApply = () => {
+    startTransition(() => {
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
+    });
+  };
 
-    form.addEventListener("input", handler);
-    form.addEventListener("change", handler);
-    return () => {
-      clearTimeout(timer);
-      form.removeEventListener("input", handler);
-      form.removeEventListener("change", handler);
-    };
-  }, []);
+  const onClear = () => {
+    setTenant("");
+    setFrom("");
+    setTo("");
+    setAction("");
+    startTransition(() => {
+      router.replace(pathname);
+    });
+    // focus back to tenant box
+    setTimeout(() => tenantRef.current?.focus(), 0);
+  };
 
-  // Build current query for Export link
-  const q = new URLSearchParams();
-  if (initial.tenant) q.set("tenant", initial.tenant);
-  if (initial.action) q.set("action", initial.action);
-  if (initial.from) q.set("from", initial.from);
-  if (initial.to) q.set("to", initial.to);
+  // Build Export CSV URL from current state (matches the export API)
+  const exportUrl = useMemo(() => {
+    const p = new URLSearchParams();
+    if (tenant) p.set("qTenant", tenant);
+    if (from) p.set("from", from);
+    if (to) p.set("to", to);
+    if (action) p.set("action", action);
+    const qs = p.toString();
+    return `/api/admin/audit/export${qs ? `?${qs}` : ""}`;
+  }, [tenant, from, to, action]);
 
   return (
-    <form
-      ref={formRef}
-      method="get"
-      action="/admin/audit"
-      className="grid grid-cols-1 gap-3 md:grid-cols-5"
-    >
+    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+      {/* Tenant: ID or Name */}
       <input
-        name="tenant"
-        defaultValue={initial.tenant ?? ""}
+        ref={tenantRef}
+        className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
         placeholder="Tenant ID or Name"
-        className="h-9 rounded-md border px-3 text-sm"
-        aria-label="Tenant ID or Name"
-      />
-      <input
-        name="action"
-        defaultValue={initial.action ?? ""}
-        placeholder='e.g. "entitlement.update"'
-        className="h-9 rounded-md border px-3 text-sm"
-        aria-label="Action"
-      />
-      <input
-        type="date"
-        name="from"
-        defaultValue={initial.from ?? ""}
-        title="From (UTC)"
-        className="h-9 rounded-md border px-3 text-sm"
-        aria-label="From date (UTC)"
-      />
-      <input
-        type="date"
-        name="to"
-        defaultValue={initial.to ?? ""}
-        title="To (UTC)"
-        className="h-9 rounded-md border px-3 text-sm"
-        aria-label="To date (UTC)"
+        value={tenant}
+        onChange={(e) => setTenant(e.target.value)}
       />
 
-      <div className="flex items-center gap-2">
+      {/* Action dropdown */}
+      <select
+        className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
+        value={action}
+        onChange={(e) => setAction(e.target.value)}
+        title="Action"
+      >
+        <option value="">All actions</option>
+        <option value="entitlement">Entitlement updated</option>
+        <option value="tenant.create">Tenant create</option>
+        <option value="tenant.update">Tenant update</option>
+        <option value="user.">User actions</option>
+      </select>
+
+      {/* Date range */}
+      <input
+        type="date"
+        className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
+        value={from}
+        onChange={(e) => setFrom(e.target.value)}
+      />
+      <input
+        type="date"
+        className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
+        value={to}
+        onChange={(e) => setTo(e.target.value)}
+      />
+
+      {/* Spacer to keep 5-column grid balanced */}
+      <div />
+
+      {/* Actions row */}
+      <div className="col-span-full flex items-center gap-2">
         <button
-          type="submit"
-          className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
-          title="Apply now (Enter)"
+          onClick={onApply}
+          className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+          type="button"
         >
           Apply
         </button>
-
-        <Link href="/admin/audit">
-          <Button type="button" variant="secondary">
-            Clear
-          </Button>
-        </Link>
-
-        {/* Export respects active filters */}
-        <Link
-          href={`/admin/audit/export${q.toString() ? `?${q.toString()}` : ""}`}
-          prefetch={false}
+        <button
+          onClick={onClear}
+          className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+          type="button"
         >
-          <Button type="button">Export CSV</Button>
+          Clear
+        </button>
+
+        {/* Export CSV (respects current filters) */}
+        <Link href={exportUrl} prefetch={false} target="_blank" rel="noopener">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Export CSV
+          </button>
         </Link>
       </div>
-    </form>
+    </div>
   );
 }

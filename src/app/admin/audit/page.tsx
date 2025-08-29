@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { formatAuditAction } from "./actionFormatter";
-import Filters from "./filters"; // requires { initial }
+import Filters from "./filters";
 
 export const dynamic = "force-dynamic";
 
@@ -21,36 +21,6 @@ function getParam(sp: Record<string, string | string[] | undefined>, key: string
   return Array.isArray(v) ? v[0] ?? "" : v ?? "";
 }
 
-// Build Prisma where-clause from URL params (server-side filtering).
-function buildWhere(searchParams: Record<string, string | string[] | undefined>) {
-  const q = getParam(searchParams, "q")?.trim();
-  const tenant = getParam(searchParams, "tenant")?.trim();
-  const from = getParam(searchParams, "from")?.trim();
-  const to = getParam(searchParams, "to")?.trim();
-
-  const where: any = {};
-
-  if (q) {
-    where.OR = [
-      { action: { contains: q, mode: "insensitive" } },
-      { id: { contains: q } },
-    ];
-  }
-
-  if (tenant) {
-    // Server-side search already supports partial ID (and you added name on server previously)
-    where.tenantId = { contains: tenant };
-  }
-
-  if (from || to) {
-    where.createdAt = {};
-    if (from) where.createdAt.gte = new Date(from);
-    if (to) where.createdAt.lte = new Date(to);
-  }
-
-  return where;
-}
-
 function toSearchString(sp: Record<string, string | string[] | undefined>) {
   const usp = new URLSearchParams();
   Object.entries(sp).forEach(([k, v]) => {
@@ -64,23 +34,99 @@ function toSearchString(sp: Record<string, string | string[] | undefined>) {
   return usp.toString();
 }
 
+function notNull<T>(v: T | null | undefined): v is T {
+  return v != null;
+}
+
 export default async function AuditListPage({
   searchParams,
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  // ✅ Provide initial values for the Filters component from URL params
   const initial = {
     tenant: getParam(searchParams, "tenant") || "",
     q: getParam(searchParams, "q") || "",
     from: getParam(searchParams, "from") || "",
     to: getParam(searchParams, "to") || "",
+    action: getParam(searchParams, "action") || "",
   };
 
-  // Server-side filters
-  const where = buildWhere(searchParams);
+  const q = initial.q.trim();
+  const tenantInput = initial.tenant.trim();
+  const from = initial.from.trim();
+  const to = initial.to.trim();
+  const actionKey = initial.action.trim();
 
-  // Query — include metaJson for ON/OFF formatting
+  const baseWhere: any = {};
+
+  if (q) {
+    baseWhere.OR = [
+      { action: { contains: q } }, // removed mode
+      { id: { contains: q } },
+    ];
+  }
+
+  // Action dropdown — use contains (no mode)
+  if (actionKey) {
+    baseWhere.action = { contains: actionKey };
+  }
+
+  if (from || to) {
+    baseWhere.createdAt = {};
+    if (from) baseWhere.createdAt.gte = new Date(from);
+    if (to) baseWhere.createdAt.lte = new Date(to);
+  }
+
+  // Resolve tenant by name *or* id (no mode)
+  let tenantIdsFilter: string[] | null = null;
+  if (tenantInput) {
+    const matchTenants = await prisma.tenant.findMany({
+      where: {
+        OR: [
+          { name: { contains: tenantInput } }, // removed mode
+          { id: { contains: tenantInput } },
+        ],
+      },
+      select: { id: true },
+      take: 200,
+    });
+    tenantIdsFilter = Array.from(new Set(matchTenants.map((t) => t.id))).filter(notNull);
+    if (tenantIdsFilter.length === 0) {
+      return (
+        <div className="p-6 space-y-4">
+          <Header searchParams={searchParams} />
+          <Filters initial={initial} />
+          <div className="overflow-x-auto rounded-xl border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr className="[&>th]:px-3 [&>th]:py-2 text-left">
+                  <th>Time</th>
+                  <th>Tenant ID</th>
+                  <th>Tenant Name</th>
+                  <th>Action</th>
+                  <th>Actor</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
+                    No audit entries found.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+  }
+
+  const where = {
+    ...baseWhere,
+    ...(tenantIdsFilter ? { tenantId: { in: tenantIdsFilter } } : {}),
+  };
+
   const entries = await prisma.auditLog.findMany({
     where,
     orderBy: { createdAt: "desc" },
@@ -88,39 +134,42 @@ export default async function AuditListPage({
     select: {
       id: true,
       action: true,
-      metaJson: true, // needed by formatter
+      metaJson: true,
       createdAt: true,
       tenantId: true,
       actorUserId: true,
     },
   });
 
-  // Preserve filters in CSV export
-  const qs = toSearchString(searchParams);
-  const exportHref = `/api/admin/audit/export${qs ? `?${qs}` : ""}`;
+  const tenantIds: string[] = Array.from(
+    new Set(entries.map((e) => e.tenantId).filter(notNull))
+  );
+  const userIds: string[] = Array.from(
+    new Set(entries.map((e) => e.actorUserId).filter(notNull))
+  );
+
+  const [tenants, users] = await Promise.all([
+    tenantIds.length
+      ? prisma.tenant.findMany({
+          where: { id: { in: tenantIds } },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
+    userIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const tenantNameById = new Map(tenants.map((t) => [t.id, t.name]));
+  const userNameById = new Map(users.map((u) => [u.id, u.name]));
 
   return (
     <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">Audit Log</h1>
+      <Header searchParams={searchParams} />
 
-        <div className="flex items-center gap-2">
-          <Link
-            href={exportHref}
-            className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
-          >
-            Export CSV (filtered)
-          </Link>
-          <Link
-            href="/admin"
-            className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
-          >
-            Back to Admin
-          </Link>
-        </div>
-      </div>
-
-      {/* ✅ Keep existing filter UI, now with required prop */}
       <Filters initial={initial} />
 
       <div className="overflow-x-auto rounded-xl border">
@@ -129,32 +178,39 @@ export default async function AuditListPage({
             <tr className="[&>th]:px-3 [&>th]:py-2 text-left">
               <th>Time</th>
               <th>Tenant ID</th>
+              <th>Tenant Name</th>
               <th>Action</th>
               <th>Actor</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody>
-            {entries.map((e) => (
-              <tr key={e.id} className="border-t [&>td]:px-3 [&>td]:py-2">
-                <td className="whitespace-nowrap">{fmtDate(e.createdAt)}</td>
-                <td className="font-mono text-xs">{e.tenantId}</td>
-                <td>{formatAuditAction(e.action, e.metaJson)}</td>
-                <td className="font-mono text-xs">{e.actorUserId ?? "—"}</td>
-                <td>
-                  <Link
-                    href={`/admin/audit/${e.id}`}
-                    className="inline-flex items-center rounded-xl border px-2 py-1 text-xs font-medium hover:bg-muted"
-                  >
-                    View
-                  </Link>
-                </td>
-              </tr>
-            ))}
+            {entries.map((e) => {
+              const tenantName = tenantNameById.get(e.tenantId) ?? "—";
+              const actorName = e.actorUserId ? userNameById.get(e.actorUserId) ?? e.actorUserId : "—";
+
+              return (
+                <tr key={e.id} className="border-t [&>td]:px-3 [&>td]:py-2">
+                  <td className="whitespace-nowrap">{fmtDate(e.createdAt)}</td>
+                  <td className="font-mono text-xs">{e.tenantId}</td>
+                  <td className="text-xs">{tenantName}</td>
+                  <td>{formatAuditAction(e.action, e.metaJson)}</td>
+                  <td className="text-xs">{actorName}</td>
+                  <td>
+                    <Link
+                      href={`/admin/audit/${e.id}`}
+                      className="inline-flex items-center rounded-xl border px-2 py-1 text-xs font-medium hover:bg-muted"
+                    >
+                      View
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
 
             {entries.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
                   No audit entries found.
                 </td>
               </tr>
@@ -162,6 +218,21 @@ export default async function AuditListPage({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function Header({ searchParams }: { searchParams: Record<string, string | string[] | undefined> }) {
+  // Legacy export removed; keep a clean header with Back to Admin only.
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <h1 className="text-2xl font-bold">Audit Log</h1>
+      <Link
+        href="/admin"
+        className="inline-flex items-center rounded-xl border px-3 py-2 text-sm font-medium hover:bg-muted"
+      >
+        Back to Admin
+      </Link>
     </div>
   );
 }
