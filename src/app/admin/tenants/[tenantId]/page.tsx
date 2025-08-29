@@ -42,7 +42,7 @@ function parseStatus(value: string): TenantStatus {
   }
 }
 
-// Server action stays the same as your last working version
+// Server action (update & log)
 export async function updateTenant(formData: FormData) {
   "use server";
 
@@ -127,7 +127,7 @@ export default async function ManageTenantPage({
 
   const statusOptions = Object.values(TenantStatus) as TenantStatus[];
 
-  // preserve q/sort
+  // preserve q/sort for outbound links when present
   const q = typeof sp.q === "string" ? sp.q : "";
   const sort = typeof sp.sort === "string" ? sp.sort : "";
   const qs = new URLSearchParams();
@@ -144,11 +144,12 @@ export default async function ManageTenantPage({
         <h1 className="text-2xl font-semibold">Manage Tenant</h1>
 
         <div className="flex items-center gap-2">
+          {/* FIX: do NOT force q=tenant.id when no q exists */}
           <Link
             href={{
               pathname: "/admin/tenants",
               query: {
-                q: typeof sp.q === "string" ? sp.q : tenant.id,
+                q: typeof sp.q === "string" ? sp.q : undefined,
                 sort: typeof sp.sort === "string" ? sp.sort : undefined,
               },
             }}

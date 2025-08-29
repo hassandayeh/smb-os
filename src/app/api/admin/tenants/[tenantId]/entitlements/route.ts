@@ -1,35 +1,49 @@
+// src/app/api/admin/tenants/[tenantId]/entitlements/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// GET /api/admin/tenants/[tenantId]/entitlements
+export const dynamic = "force-dynamic";
+
+// Best-effort actor resolver for local dev (replace with real session later)
+async function getActorUserId(): Promise<string | null> {
+  try {
+    const user = await prisma.user.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    return user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// GET: list modules + current entitlement state for a tenant
 export async function GET(
   _req: Request,
   { params }: { params: { tenantId: string } }
 ) {
-  const { tenantId } = params;
+  const tenantId = params?.tenantId;
+  if (!tenantId) {
+    return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+  }
 
   try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { id: true, name: true },
-    });
-
-    if (!tenant) {
-      return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
-    }
-
+    // Load all modules (registry)
     const modules = await prisma.module.findMany({
-      orderBy: { key: "asc" },
+      orderBy: { name: "asc" },
       select: { key: true, name: true, description: true },
     });
 
-    const entitlements = await prisma.entitlement.findMany({
+    // Load existing entitlements for this tenant
+    const ents = await prisma.entitlement.findMany({
       where: { tenantId },
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
+    const entMap = new Map(ents.map((e) => [e.moduleKey, e]));
 
-    const items = modules.map((m) => {
-      const e = entitlements.find((x) => x.moduleKey === m.key);
+    // Merge for UI
+    const rows = modules.map((m) => {
+      const e = entMap.get(m.key);
       return {
         moduleKey: m.key,
         name: m.name,
@@ -39,78 +53,93 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({ tenant, items }, { status: 200 });
+    return NextResponse.json({ ok: true, items: rows }, { status: 200 });
   } catch (err) {
     console.error("GET entitlements error:", err);
-    return NextResponse.json({ error: "Failed to load entitlements" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to load entitlements" },
+      { status: 500 }
+    );
   }
 }
 
-// PATCH /api/admin/tenants/[tenantId]/entitlements
-// body: { moduleKey: string; isEnabled?: boolean; limitsJsonText?: string }
+// PATCH: upsert entitlement and write audit log
 export async function PATCH(
   req: Request,
   { params }: { params: { tenantId: string } }
 ) {
-  const { tenantId } = params;
+  const tenantId = params?.tenantId;
 
   try {
+    if (!tenantId) {
+      return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+    }
+
     const body = await req.json().catch(() => ({}));
     const moduleKey: string | undefined = body?.moduleKey;
     const isEnabled: boolean | undefined = body?.isEnabled;
-    const limitsJsonText: string | undefined = body?.limitsJsonText;
+    const limitsJsonInput: unknown = body?.limitsJson;
 
-    if (!moduleKey) {
+    if (!moduleKey || typeof moduleKey !== "string") {
       return NextResponse.json({ error: "moduleKey is required" }, { status: 400 });
     }
 
-    // Parse limits JSON text (empty => null)
-    let limits: any | null = null;
-    if (typeof limitsJsonText === "string") {
-      const trimmed = limitsJsonText.trim();
-      if (trimmed.length > 0) {
-        try {
-          limits = JSON.parse(trimmed);
-        } catch {
-          return NextResponse.json({ error: "limitsJson is not valid JSON" }, { status: 400 });
-        }
-      } else {
-        limits = null;
+    // Parse limitsJson
+    let limitsToApply: any | undefined;
+    if (typeof limitsJsonInput === "undefined") {
+      limitsToApply = undefined; // no change
+    } else if (
+      limitsJsonInput === null ||
+      (typeof limitsJsonInput === "string" && limitsJsonInput.trim() === "")
+    ) {
+      limitsToApply = null;
+    } else if (typeof limitsJsonInput === "string") {
+      try {
+        limitsToApply = JSON.parse(limitsJsonInput);
+      } catch {
+        return NextResponse.json(
+          { error: "limitsJson is not valid JSON" },
+          { status: 400 }
+        );
       }
+    } else {
+      limitsToApply = limitsJsonInput;
     }
 
-    // Use composite upsert on the unique/primary key (tenantId + moduleKey)
+    // Before snapshot
+    const before = await prisma.entitlement.findUnique({
+      where: { tenantId_moduleKey: { tenantId, moduleKey } },
+      select: { moduleKey: true, isEnabled: true, limitsJson: true },
+    });
+
+    const updateData: any = {};
+    if (typeof isEnabled === "boolean") updateData.isEnabled = isEnabled;
+    if (typeof limitsToApply !== "undefined") updateData.limitsJson = limitsToApply;
+
     const updated = await prisma.entitlement.upsert({
-      where: {
-        // This assumes your Prisma model has @@id([tenantId, moduleKey]) or @@unique([tenantId, moduleKey])
-        tenantId_moduleKey: { tenantId, moduleKey },
-      },
-      update: {
-        ...(typeof isEnabled === "boolean" ? { isEnabled } : {}),
-        ...(typeof limits !== "undefined" ? { limitsJson: limits } : {}),
-      },
+      where: { tenantId_moduleKey: { tenantId, moduleKey } },
+      update: updateData,
       create: {
         tenantId,
         moduleKey,
-        isEnabled: !!isEnabled,
-        limitsJson: typeof limits === "undefined" ? null : limits,
+        isEnabled: typeof isEnabled === "boolean" ? isEnabled : false,
+        limitsJson: typeof limitsToApply === "undefined" ? null : limitsToApply,
       },
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
 
-    // Audit log (non-fatal if it fails)
+    // Audit log (non-fatal)
     try {
+      const actorUserId = await getActorUserId();
       await prisma.auditLog.create({
         data: {
           tenantId,
-          actorUserId: null, // replace with auth user later
+          actorUserId,
           action: "entitlement.update",
           metaJson: {
             moduleKey,
-            isEnabled:
-              typeof isEnabled === "boolean" ? isEnabled : updated.isEnabled,
-            limitsJson:
-              typeof limits === "undefined" ? updated.limitsJson : limits,
+            before: before ?? null,
+            after: updated,
           },
         },
       });
@@ -121,8 +150,9 @@ export async function PATCH(
     return NextResponse.json({ ok: true, entitlement: updated }, { status: 200 });
   } catch (err) {
     console.error("PATCH entitlements error:", err);
-    return NextResponse.json({ error: "Failed to update entitlement" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to update entitlement" },
+      { status: 500 }
+    );
   }
 }
-
-export const dynamic = "force-dynamic";

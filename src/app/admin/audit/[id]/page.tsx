@@ -1,135 +1,182 @@
 // src/app/admin/audit/[id]/page.tsx
-import { prisma } from "@/lib/prisma";
-import Link from "next/link";
 import CopyJson from "@/components/CopyJson";
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
+import { Button } from "@/components/ui/button";
 
+export const dynamic = "force-dynamic";
 
-function fmtDate(d: Date | null | undefined) {
+function fmtDate(d: Date | null) {
   if (!d) return "—";
   try {
     return new Intl.DateTimeFormat(undefined, {
       year: "numeric",
       month: "short",
       day: "2-digit",
-      hour: "2-digit",
+      hour: "numeric",
       minute: "2-digit",
       second: "2-digit",
     }).format(d);
   } catch {
-    return d?.toString() ?? "—";
+    return "—";
   }
 }
 
-async function getAudit(id: string) {
-  return prisma.auditLog.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      tenantId: true,
-      actorUserId: true,
-      action: true,
-      metaJson: true,
-      createdAt: true,
-    },
-  });
+function friendlyAction(action: string) {
+  const map: Record<string, string> = {
+    "entitlement.update": "Entitlement updated",
+    "tenant.create": "Tenant created",
+    "tenant.update": "Tenant updated",
+    "tenant.activate": "Activation extended",
+  };
+  return map[action] ?? action;
 }
 
-export default async function AuditDetailPage({
+function summarize(action: string, meta: any): string | null {
+  // Add small summaries for common actions
+  if (action === "entitlement.update" && meta) {
+    const mk = meta.moduleKey ?? "—";
+    const enabled =
+      typeof meta.isEnabled === "boolean" ? (meta.isEnabled ? "ON" : "OFF") : "—";
+    return `Entitlement updated: ${mk} → ${enabled}`;
+  }
+  if (action === "tenant.update" && meta?.changes) {
+    try {
+      const changed = Object.keys(meta.changes as object);
+      if (changed.length) return `Tenant fields updated: ${changed.join(", ")}`;
+    } catch {}
+  }
+  if (action === "tenant.create" && meta?.tenantName) {
+    return `Tenant created: ${meta.tenantName}`;
+  }
+  if (action === "tenant.activate" && meta?.activatedUntil) {
+    return `Activation extended to ${meta.activatedUntil}`;
+  }
+  return null;
+}
+
+export default async function AuditEntryPage({
   params,
   searchParams,
 }: {
   params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams: Record<string, string | string[] | undefined>;
 }) {
-  const { id } = params;
-  const q = (searchParams?.q as string) || undefined;
-  const tenant = (searchParams?.tenant as string) || undefined;
-  const action = (searchParams?.action as string) || undefined;
-  const date = (searchParams?.date as string) || undefined;
+  const id = params.id;
 
-  const audit = await getAudit(id);
+  const entry = await prisma.auditLog.findUnique({
+    where: { id },
+  });
 
-  if (!audit) {
+  if (!entry) {
     return (
-      <div className="p-6 space-y-4">
-        <h1 className="text-2xl font-semibold">Audit Entry</h1>
-        <p className="text-red-600">Audit entry not found.</p>
-        <Link
-          href={{
-            pathname: "/admin/audit",
-            query: { q, tenant, action, date },
-          }}
-          className="underline"
-        >
-          Back to list
-        </Link>
+      <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Audit Entry</h1>
+          <Link href="/admin/audit">
+            <Button variant="secondary">Back to list</Button>
+          </Link>
+        </div>
+        <div className="text-muted-foreground">Entry not found.</div>
       </div>
     );
   }
 
-  const metaPretty =
-    typeof audit.metaJson === "string"
-      ? audit.metaJson
-      : JSON.stringify(audit.metaJson ?? null, null, 2);
+  // Load tenant (name) and actor (display)
+  const [tenant, actor] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: entry.tenantId },
+      select: { id: true, name: true },
+    }),
+    entry.actorUserId
+      ? prisma.user.findUnique({
+          where: { id: entry.actorUserId },
+          select: { id: true, name: true, email: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const titleTenant = tenant?.name || tenant?.id || entry.tenantId || "—";
+  const meta =
+    typeof entry.metaJson === "object" ? entry.metaJson : (null as any);
+  const friendly = summarize(entry.action, meta) ?? friendlyAction(entry.action);
+
+  // Preserve filters in Back button if present
+  const q = new URLSearchParams();
+  const keys = ["tenantId", "action", "from", "to"];
+  keys.forEach((k) => {
+    const v = searchParams[k];
+    if (typeof v === "string" && v) q.set(k, v);
+  });
+  const backHref = `/admin/audit${q.toString() ? `?${q.toString()}` : ""}`;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Audit Entry</h1>
-        <Link
-          href={{
-            pathname: "/admin/audit",
-            query: { q, tenant, action, date },
-          }}
-          className="text-sm underline"
-        >
-          Back to list
+        <h1 className="text-2xl font-semibold">Audit Entry — {titleTenant}</h1>
+        <Link href={backHref}>
+          <Button variant="secondary">Back to list</Button>
         </Link>
       </div>
 
-      <div className="grid gap-3 max-w-3xl">
-        <div className="rounded-lg border p-4">
-          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div>
-              <div className="text-gray-500">ID</div>
-              <div className="font-mono break-all">{audit.id}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Tenant</div>
-              <div className="font-mono break-all">{audit.tenantId ?? "—"}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Action</div>
-              <div>{audit.action}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Actor</div>
-              <div className="font-mono break-all">
-                {audit.actorUserId ?? "—"}
-              </div>
-            </div>
-            <div className="sm:col-span-2">
-              <div className="text-gray-500">Created</div>
-              <div>{fmtDate(audit.createdAt)}</div>
-            </div>
-          </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">ID</div>
+          <div className="font-mono">{entry.id}</div>
         </div>
-
-        <details className="rounded-lg border p-4" open>
-          <summary className="cursor-pointer text-sm font-medium mb-2">
-            metaJson
-          </summary>
-
-          <CopyJson text={metaPretty} targetId="meta-json" />
-
-          <pre
-            id="meta-json"
-            className="whitespace-pre-wrap break-words rounded-md border bg-gray-50 p-3 text-xs"
-          >
-            {metaPretty}
-          </pre>
-        </details>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Tenant</div>
+          <div>{tenant?.name || "—"}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Action</div>
+          <div>{friendly}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Actor</div>
+          <div>{actor?.name || actor?.email || "—"}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Created</div>
+          <div>{fmtDate(entry.createdAt)}</div>
+        </div>
       </div>
+
+{/* Raw meta JSON */}
+<div className="border rounded-lg p-4 space-y-3">
+  <details open>
+    <summary className="cursor-pointer font-medium">metaJson</summary>
+    <CopyJson text={JSON.stringify(entry.metaJson, null, 2)} targetId="meta" />
+    <pre
+      id="meta"
+      className="mt-3 bg-muted/40 rounded p-3 overflow-auto text-sm"
+    >
+{JSON.stringify(entry.metaJson, null, 2)}
+    </pre>
+  </details>
+</div>
+
+      {/* Tiny client script to support Copy JSON without extra components */}
+      <script
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{
+          __html: `
+          (function(){
+            const btn = document.currentScript?.previousElementSibling?.querySelector('button');
+            const pre = document.currentScript?.previousElementSibling?.querySelector('pre');
+            if(btn && pre){
+              btn.addEventListener('click', async () => {
+                try {
+                  await navigator.clipboard.writeText(pre.textContent || '');
+                  btn.textContent = 'Copied';
+                  setTimeout(()=>btn.textContent='Copy JSON', 1000);
+                } catch {}
+              });
+            }
+          })();
+        `,
+        }}
+      />
     </div>
   );
 }
