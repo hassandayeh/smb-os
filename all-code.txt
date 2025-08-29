@@ -9106,187 +9106,223 @@ export default function AuditFilters({ pageSize = 20 }: Props) {
 
 ----- FILE: .\src\app\admin\audit\page.tsx -----
 
+// src/app/admin/audit/page.tsx
 import Link from "next/link";
-import AuditFilters from "./filters";
 import { prisma } from "@/lib/prisma";
+import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
 
-// Keep page size consistent with the client comp
-const PAGE_SIZE = 20;
+type Search = {
+  tenantId?: string;
+  action?: string;
+  from?: string; // yyyy-mm-dd
+  to?: string;   // yyyy-mm-dd
+};
 
-function parseDateOnly(d?: string | null) {
-  if (!d) return undefined;
-  // Expecting YYYY-MM-DD from <input type="date">
-  const [y, m, day] = d.split("-").map(Number);
-  if (!y || !m || !day) return undefined;
-  return new Date(Date.UTC(y, m - 1, day));
+function fmtDate(d: Date | null) {
+  if (!d) return "—";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(d);
+  } catch {
+    return "—";
+  }
+}
+
+function friendlyAction(action: string) {
+  const map: Record<string, string> = {
+    "entitlement.update": "Entitlement updated",
+    "tenant.create": "Tenant created",
+    "tenant.update": "Tenant updated",
+    "tenant.activate": "Activation extended",
+  };
+  return map[action] ?? action;
+}
+
+function parseDateBoundaries(from?: string, to?: string) {
+  const where: any = {};
+  if (from || to) {
+    where.createdAt = {};
+    if (from) where.createdAt.gte = new Date(`${from}T00:00:00.000Z`);
+    if (to) where.createdAt.lte = new Date(`${to}T23:59:59.999Z`);
+  }
+  return where;
+}
+
+async function getData(searchParams: Search) {
+  const { tenantId, action, from, to } = searchParams;
+
+  const where: any = {
+    ...(tenantId ? { tenantId } : {}),
+    ...(action ? { action: { contains: action } } : {}),
+    ...parseDateBoundaries(from, to),
+  };
+
+  // 1) Fetch audit log rows (no includes to keep schema-agnostic)
+  const entries = await prisma.auditLog.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+
+  // 2) Batch-load tenants for names
+  const tenantIds = Array.from(new Set(entries.map((e) => e.tenantId))).filter(
+    Boolean
+  );
+  const tenants =
+    tenantIds.length > 0
+      ? await prisma.tenant.findMany({
+          where: { id: { in: tenantIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+  const tenantMap = new Map(tenants.map((t) => [t.id, t.name ?? "—"]));
+
+  // 3) Batch-load users for actor display
+  const actorIds = Array.from(
+    new Set(entries.map((e) => e.actorUserId).filter(Boolean) as string[])
+  );
+  const users =
+    actorIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, name: true, email: true },
+        })
+      : [];
+  const userMap = new Map(
+    users.map((u) => [u.id, u.name || u.email || "—"])
+  );
+
+  return { entries, tenantMap, userMap };
 }
 
 export default async function AuditLogPage({
   searchParams,
 }: {
-  searchParams?: {
-    tenantId?: string;
-    action?: string;
-    from?: string; // YYYY-MM-DD
-    to?: string;   // YYYY-MM-DD
-    page?: string;
-  };
+  searchParams: Search;
 }) {
-  const tenantId = searchParams?.tenantId?.trim() || undefined;
-  const action = searchParams?.action?.trim() || undefined;
-  const from = parseDateOnly(searchParams?.from);
-  const to = parseDateOnly(searchParams?.to);
-  const page = Math.max(1, Number(searchParams?.page || "1") || 1);
+  const { entries, tenantMap, userMap } = await getData(searchParams);
+  const q = searchParams || {};
 
-  // Build Prisma where
-  const where: any = {};
-  // Partial match for tenantId (SQLite: case-sensitive contains)
-  if (tenantId) where.tenantId = { contains: tenantId };
-  if (action) where.action = { contains: action }; // SQLite: case-sensitive contains
-
-  if (from || to) {
-    where.createdAt = {};
-    if (from) where.createdAt.gte = from;
-    if (to) {
-      // include "to" day end (23:59:59.999 UTC)
-      const end = new Date(to);
-      end.setUTCHours(23, 59, 59, 999);
-      where.createdAt.lte = end;
-    }
-  }
-
-  const [total, logs] = await Promise.all([
-    prisma.auditLog.count({ where }),
-    prisma.auditLog.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take: PAGE_SIZE,
-      skip: (page - 1) * PAGE_SIZE,
-    }),
-  ]);
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  // Helper to keep query params while changing page
-  function pageHref(p: number) {
-    const params = new URLSearchParams();
-    if (tenantId) params.set("tenantId", tenantId);
-    if (action) params.set("action", action);
-    if (searchParams?.from) params.set("from", searchParams.from);
-    if (searchParams?.to) params.set("to", searchParams.to);
-    params.set("page", String(p));
-    return `/admin/audit?${params.toString()}`;
-  }
-
-  // Build export href preserving filters (no pagination)
-  const exportHref = (() => {
-    const params = new URLSearchParams();
-    if (tenantId) params.set("tenantId", tenantId);
-    if (action) params.set("action", action);
-    if (searchParams?.from) params.set("from", searchParams.from);
-    if (searchParams?.to) params.set("to", searchParams.to);
-    return `/admin/audit/export?${params.toString()}`;
-  })();
+  const query = new URLSearchParams();
+  if (q.tenantId) query.set("tenantId", q.tenantId);
+  if (q.action) query.set("action", q.action);
+  if (q.from) query.set("from", q.from);
+  if (q.to) query.set("to", q.to);
 
   return (
-    <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Audit Log</h1>
-        <div className="flex items-center gap-2">
-          <Link
-            href="/admin"
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted/40"
-          >
-            Admin Console
+        <div className="flex gap-2">
+          <Link href="/admin">
+            <Button variant="secondary">Admin Console</Button>
           </Link>
-          <a
-            href={exportHref}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-muted/40"
-          >
-            Export CSV
-          </a>
+          <Link href={`/admin/audit/export?${query.toString()}`}>
+            <Button variant="secondary">Export CSV</Button>
+          </Link>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="mb-4">
-        <AuditFilters pageSize={PAGE_SIZE} />
-      </div>
+      <form className="grid grid-cols-1 sm:grid-cols-5 gap-3" method="GET">
+        <div className="flex flex-col">
+          <label className="text-sm text-muted-foreground">Tenant ID</label>
+          <input
+            name="tenantId"
+            defaultValue={q.tenantId ?? ""}
+            className="border rounded px-3 py-2"
+            placeholder="Exact tenantId"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-sm text-muted-foreground">Action</label>
+          <input
+            name="action"
+            defaultValue={q.action ?? ""}
+            className="border rounded px-3 py-2"
+            placeholder='e.g. "entitlement.update"'
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-sm text-muted-foreground">From (UTC)</label>
+          <input
+            type="date"
+            name="from"
+            defaultValue={q.from ?? ""}
+            className="border rounded px-3 py-2"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-sm text-muted-foreground">To (UTC)</label>
+          <input
+            type="date"
+            name="to"
+            defaultValue={q.to ?? ""}
+            className="border rounded px-3 py-2"
+          />
+        </div>
+        <div className="flex items-end gap-2">
+          <Button type="submit">Apply</Button>
+          <Link href="/admin/audit">
+            <Button type="button" variant="secondary">
+              Clear
+            </Button>
+          </Link>
+        </div>
+      </form>
 
-      <div className="overflow-x-auto rounded-xl border">
-        <table className="min-w-full text-sm">
-          <thead className="bg-muted/40 text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3 text-left">Time</th>
-              <th className="px-4 py-3 text-left">Tenant</th>
-              <th className="px-4 py-3 text-left">Actor</th>
-              <th className="px-4 py-3 text-left">Action</th>
-              <th className="px-4 py-3 text-left">Details</th>
+      {/* Table */}
+      <div className="overflow-x-auto border rounded-lg">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40">
+            <tr className="[&>th]:text-left [&>th]:px-4 [&>th]:py-2">
+              <th>Time</th>
+              <th>Tenant ID</th>
+              <th>Tenant Name</th>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Details</th>
             </tr>
           </thead>
-          <tbody>
-            {logs.map((log) => (
-              <tr key={log.id} className="border-t">
-                <td className="px-4 py-3 align-top">
-                  {new Date(log.createdAt).toLocaleString()}
-                </td>
-                <td className="px-4 py-3 align-top">{log.tenantId}</td>
-                <td className="px-4 py-3 align-top">{log.actorUserId ?? "—"}</td>
-                <td className="px-4 py-3 align-top">{log.action}</td>
-                <td className="px-4 py-3 align-top">
-                  <Link
-                    href={`/admin/audit/${log.id}?${new URLSearchParams({
-                      ...(tenantId ? { tenantId } : {}),
-                      ...(action ? { action } : {}),
-                      ...(searchParams?.from ? { from: searchParams.from } : {}),
-                      ...(searchParams?.to ? { to: searchParams.to } : {}),
-                      page: String(page),
-                    }).toString()}`}
-                    className="underline hover:no-underline"
-                  >
-                    View
-                  </Link>
-                </td>
-              </tr>
-            ))}
-            {logs.length === 0 && (
+          <tbody className="[&>tr>td]:px-4 [&>tr>td]:py-2">
+            {entries.map((e) => {
+              const tenantName = tenantMap.get(e.tenantId) ?? "—";
+              const actor =
+                (e.actorUserId ? userMap.get(e.actorUserId) : undefined) ?? "—";
+              return (
+                <tr key={e.id} className="border-t">
+                  <td className="whitespace-nowrap">{fmtDate(e.createdAt)}</td>
+                  <td className="font-mono">{e.tenantId}</td>
+                  <td>{tenantName}</td>
+                  <td>{friendlyAction(e.action)}</td>
+                  <td className="whitespace-nowrap">{actor}</td>
+                  <td>
+                    <Link
+                      className="underline"
+                      href={`/admin/audit/${e.id}${query.toString() ? `?${query.toString()}` : ""}`}
+                    >
+                      View
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
+            {entries.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">
+                <td colSpan={6} className="text-center py-8 text-muted-foreground">
                   No audit entries found.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
-
-      {/* Pagination */}
-      <div className="mt-4 flex items-center justify-between text-sm">
-        <div className="text-muted-foreground">
-          Showing {(page - 1) * PAGE_SIZE + 1}–
-          {Math.min(page * PAGE_SIZE, total)} of {total}
-        </div>
-        <div className="flex items-center gap-2">
-          <Link
-            aria-disabled={page <= 1}
-            className={`rounded-md border px-3 py-1.5 ${page <= 1 ? "pointer-events-none opacity-50" : ""}`}
-            href={page > 1 ? pageHref(page - 1) : "#"}
-          >
-            Prev
-          </Link>
-          <span>
-            Page {page} / {totalPages}
-          </span>
-          <Link
-            aria-disabled={page >= totalPages}
-            className={`rounded-md border px-3 py-1.5 ${page >= totalPages ? "pointer-events-none opacity-50" : ""}`}
-            href={page < totalPages ? pageHref(page + 1) : "#"}
-          >
-            Next
-          </Link>
-        </div>
       </div>
     </div>
   );
@@ -9447,137 +9483,184 @@ export async function GET(req: Request) {
 ----- FILE:  -----
 
 // src/app/admin/audit/[id]/page.tsx
-import { prisma } from "@/lib/prisma";
-import Link from "next/link";
 import CopyJson from "@/components/CopyJson";
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
+import { Button } from "@/components/ui/button";
 
+export const dynamic = "force-dynamic";
 
-function fmtDate(d: Date | null | undefined) {
+function fmtDate(d: Date | null) {
   if (!d) return "—";
   try {
     return new Intl.DateTimeFormat(undefined, {
       year: "numeric",
       month: "short",
       day: "2-digit",
-      hour: "2-digit",
+      hour: "numeric",
       minute: "2-digit",
       second: "2-digit",
     }).format(d);
   } catch {
-    return d?.toString() ?? "—";
+    return "—";
   }
 }
 
-async function getAudit(id: string) {
-  return prisma.auditLog.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      tenantId: true,
-      actorUserId: true,
-      action: true,
-      metaJson: true,
-      createdAt: true,
-    },
-  });
+function friendlyAction(action: string) {
+  const map: Record<string, string> = {
+    "entitlement.update": "Entitlement updated",
+    "tenant.create": "Tenant created",
+    "tenant.update": "Tenant updated",
+    "tenant.activate": "Activation extended",
+  };
+  return map[action] ?? action;
 }
 
-export default async function AuditDetailPage({
+function summarize(action: string, meta: any): string | null {
+  // Add small summaries for common actions
+  if (action === "entitlement.update" && meta) {
+    const mk = meta.moduleKey ?? "—";
+    const enabled =
+      typeof meta.isEnabled === "boolean" ? (meta.isEnabled ? "ON" : "OFF") : "—";
+    return `Entitlement updated: ${mk} → ${enabled}`;
+  }
+  if (action === "tenant.update" && meta?.changes) {
+    try {
+      const changed = Object.keys(meta.changes as object);
+      if (changed.length) return `Tenant fields updated: ${changed.join(", ")}`;
+    } catch {}
+  }
+  if (action === "tenant.create" && meta?.tenantName) {
+    return `Tenant created: ${meta.tenantName}`;
+  }
+  if (action === "tenant.activate" && meta?.activatedUntil) {
+    return `Activation extended to ${meta.activatedUntil}`;
+  }
+  return null;
+}
+
+export default async function AuditEntryPage({
   params,
   searchParams,
 }: {
   params: { id: string };
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams: Record<string, string | string[] | undefined>;
 }) {
-  const { id } = params;
-  const q = (searchParams?.q as string) || undefined;
-  const tenant = (searchParams?.tenant as string) || undefined;
-  const action = (searchParams?.action as string) || undefined;
-  const date = (searchParams?.date as string) || undefined;
+  const id = params.id;
 
-  const audit = await getAudit(id);
+  const entry = await prisma.auditLog.findUnique({
+    where: { id },
+  });
 
-  if (!audit) {
+  if (!entry) {
     return (
-      <div className="p-6 space-y-4">
-        <h1 className="text-2xl font-semibold">Audit Entry</h1>
-        <p className="text-red-600">Audit entry not found.</p>
-        <Link
-          href={{
-            pathname: "/admin/audit",
-            query: { q, tenant, action, date },
-          }}
-          className="underline"
-        >
-          Back to list
-        </Link>
+      <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Audit Entry</h1>
+          <Link href="/admin/audit">
+            <Button variant="secondary">Back to list</Button>
+          </Link>
+        </div>
+        <div className="text-muted-foreground">Entry not found.</div>
       </div>
     );
   }
 
-  const metaPretty =
-    typeof audit.metaJson === "string"
-      ? audit.metaJson
-      : JSON.stringify(audit.metaJson ?? null, null, 2);
+  // Load tenant (name) and actor (display)
+  const [tenant, actor] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: entry.tenantId },
+      select: { id: true, name: true },
+    }),
+    entry.actorUserId
+      ? prisma.user.findUnique({
+          where: { id: entry.actorUserId },
+          select: { id: true, name: true, email: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const titleTenant = tenant?.name || tenant?.id || entry.tenantId || "—";
+  const meta =
+    typeof entry.metaJson === "object" ? entry.metaJson : (null as any);
+  const friendly = summarize(entry.action, meta) ?? friendlyAction(entry.action);
+
+  // Preserve filters in Back button if present
+  const q = new URLSearchParams();
+  const keys = ["tenantId", "action", "from", "to"];
+  keys.forEach((k) => {
+    const v = searchParams[k];
+    if (typeof v === "string" && v) q.set(k, v);
+  });
+  const backHref = `/admin/audit${q.toString() ? `?${q.toString()}` : ""}`;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Audit Entry</h1>
-        <Link
-          href={{
-            pathname: "/admin/audit",
-            query: { q, tenant, action, date },
-          }}
-          className="text-sm underline"
-        >
-          Back to list
+        <h1 className="text-2xl font-semibold">Audit Entry — {titleTenant}</h1>
+        <Link href={backHref}>
+          <Button variant="secondary">Back to list</Button>
         </Link>
       </div>
 
-      <div className="grid gap-3 max-w-3xl">
-        <div className="rounded-lg border p-4">
-          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div>
-              <div className="text-gray-500">ID</div>
-              <div className="font-mono break-all">{audit.id}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Tenant</div>
-              <div className="font-mono break-all">{audit.tenantId ?? "—"}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Action</div>
-              <div>{audit.action}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Actor</div>
-              <div className="font-mono break-all">
-                {audit.actorUserId ?? "—"}
-              </div>
-            </div>
-            <div className="sm:col-span-2">
-              <div className="text-gray-500">Created</div>
-              <div>{fmtDate(audit.createdAt)}</div>
-            </div>
-          </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">ID</div>
+          <div className="font-mono">{entry.id}</div>
         </div>
-
-        <details className="rounded-lg border p-4" open>
-          <summary className="cursor-pointer text-sm font-medium mb-2">
-            metaJson
-          </summary>
-
-          <CopyJson text={metaPretty} targetId="meta-json" />
-
-          <pre
-            id="meta-json"
-            className="whitespace-pre-wrap break-words rounded-md border bg-gray-50 p-3 text-xs"
-          >
-            {metaPretty}
-          </pre>
-        </details>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Tenant</div>
+          <div>{tenant?.name || "—"}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Action</div>
+          <div>{friendly}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Actor</div>
+          <div>{actor?.name || actor?.email || "—"}</div>
+        </div>
+        <div className="border rounded-lg p-4">
+          <div className="text-sm text-muted-foreground">Created</div>
+          <div>{fmtDate(entry.createdAt)}</div>
+        </div>
       </div>
+
+{/* Raw meta JSON */}
+<div className="border rounded-lg p-4 space-y-3">
+  <details open>
+    <summary className="cursor-pointer font-medium">metaJson</summary>
+    <CopyJson text={JSON.stringify(entry.metaJson, null, 2)} targetId="meta" />
+    <pre
+      id="meta"
+      className="mt-3 bg-muted/40 rounded p-3 overflow-auto text-sm"
+    >
+{JSON.stringify(entry.metaJson, null, 2)}
+    </pre>
+  </details>
+</div>
+
+      {/* Tiny client script to support Copy JSON without extra components */}
+      <script
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{
+          __html: `
+          (function(){
+            const btn = document.currentScript?.previousElementSibling?.querySelector('button');
+            const pre = document.currentScript?.previousElementSibling?.querySelector('pre');
+            if(btn && pre){
+              btn.addEventListener('click', async () => {
+                try {
+                  await navigator.clipboard.writeText(pre.textContent || '');
+                  btn.textContent = 'Copied';
+                  setTimeout(()=>btn.textContent='Copy JSON', 1000);
+                } catch {}
+              });
+            }
+          })();
+        `,
+        }}
+      />
     </div>
   );
 }
@@ -10774,7 +10857,7 @@ function parseStatus(value: string): TenantStatus {
   }
 }
 
-// Server action stays the same as your last working version
+// Server action (update & log)
 export async function updateTenant(formData: FormData) {
   "use server";
 
@@ -10859,7 +10942,7 @@ export default async function ManageTenantPage({
 
   const statusOptions = Object.values(TenantStatus) as TenantStatus[];
 
-  // preserve q/sort
+  // preserve q/sort for outbound links when present
   const q = typeof sp.q === "string" ? sp.q : "";
   const sort = typeof sp.sort === "string" ? sp.sort : "";
   const qs = new URLSearchParams();
@@ -10876,11 +10959,12 @@ export default async function ManageTenantPage({
         <h1 className="text-2xl font-semibold">Manage Tenant</h1>
 
         <div className="flex items-center gap-2">
+          {/* FIX: do NOT force q=tenant.id when no q exists */}
           <Link
             href={{
               pathname: "/admin/tenants",
               query: {
-                q: typeof sp.q === "string" ? sp.q : tenant.id,
+                q: typeof sp.q === "string" ? sp.q : undefined,
                 sort: typeof sp.sort === "string" ? sp.sort : undefined,
               },
             }}
@@ -10985,6 +11069,10 @@ export default function ManageEntitlementsPage() {
   const tenantId = String(params.tenantId);
   const sp = useSearchParams();
 
+  // --- tenant name (header) ---
+  const [tenantName, setTenantName] = useState<string | null>(null);
+  const [tenantNameLoading, setTenantNameLoading] = useState<boolean>(true);
+
   // preserve q/sort if present
   const q = sp.get("q") ?? "";
   const sort = sp.get("sort") ?? "";
@@ -11049,11 +11137,32 @@ export default function ManageEntitlementsPage() {
     }
   }
 
+  // --- single, robust tenant name lookup (no extra endpoints) ---
+  async function loadTenantName(tid: string) {
+    setTenantNameLoading(true);
+    try {
+      const res = await fetch(`/api/admin/tenants/${tid}`, { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      const name =
+        (data && typeof data.name === "string" && data.name) ||
+        (data && data.item && typeof data.item.name === "string" && data.item.name) ||
+        (data && data.tenant && typeof data.tenant.name === "string" && data.tenant.name) ||
+        null;
+      setTenantName(name);
+    } catch {
+      setTenantName(null);
+    } finally {
+      setTenantNameLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!tenantId) return;
     load(tenantId);
+    loadTenantName(tenantId);
   }, [tenantId]);
 
+  // original button look (kept)
   const btnClass =
     "inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted";
 
@@ -11082,7 +11191,6 @@ export default function ManageEntitlementsPage() {
 
       // mark as saved (show brief success) and refresh from server to ensure truth
       setRowSaved((prev) => ({ ...prev, [moduleKey]: true }));
-      // auto-hide "Saved" after 1.5s
       setTimeout(() => {
         setRowSaved((prev) => ({ ...prev, [moduleKey]: false }));
       }, 1500);
@@ -11112,7 +11220,14 @@ export default function ManageEntitlementsPage() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Manage Entitlements</h1>
+        <h1 className="text-2xl font-semibold">
+          Manage Entitlements
+          {tenantNameLoading ? (
+            <span className="text-muted-foreground"> — …</span>
+          ) : tenantName ? (
+            <span className="text-muted-foreground"> — {tenantName}</span>
+          ) : null}
+        </h1>
 
         <div className="flex items-center gap-2">
           <Link href="/admin" className={btnClass}>
@@ -11310,38 +11425,52 @@ export const dynamic = 'force-dynamic';
 
 ----- FILE:  -----
 
+// src/app/api/admin/tenants/[tenantId]/entitlements/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// GET /api/admin/tenants/[tenantId]/entitlements
+export const dynamic = "force-dynamic";
+
+// Best-effort actor resolver for local dev (replace with real session later)
+async function getActorUserId(): Promise<string | null> {
+  try {
+    const user = await prisma.user.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    return user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// GET: list modules + current entitlement state for a tenant
 export async function GET(
   _req: Request,
   { params }: { params: { tenantId: string } }
 ) {
-  const { tenantId } = params;
+  const tenantId = params?.tenantId;
+  if (!tenantId) {
+    return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+  }
 
   try {
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { id: true, name: true },
-    });
-
-    if (!tenant) {
-      return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
-    }
-
+    // Load all modules (registry)
     const modules = await prisma.module.findMany({
-      orderBy: { key: "asc" },
+      orderBy: { name: "asc" },
       select: { key: true, name: true, description: true },
     });
 
-    const entitlements = await prisma.entitlement.findMany({
+    // Load existing entitlements for this tenant
+    const ents = await prisma.entitlement.findMany({
       where: { tenantId },
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
+    const entMap = new Map(ents.map((e) => [e.moduleKey, e]));
 
-    const items = modules.map((m) => {
-      const e = entitlements.find((x) => x.moduleKey === m.key);
+    // Merge for UI
+    const rows = modules.map((m) => {
+      const e = entMap.get(m.key);
       return {
         moduleKey: m.key,
         name: m.name,
@@ -11351,78 +11480,93 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({ tenant, items }, { status: 200 });
+    return NextResponse.json({ ok: true, items: rows }, { status: 200 });
   } catch (err) {
     console.error("GET entitlements error:", err);
-    return NextResponse.json({ error: "Failed to load entitlements" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to load entitlements" },
+      { status: 500 }
+    );
   }
 }
 
-// PATCH /api/admin/tenants/[tenantId]/entitlements
-// body: { moduleKey: string; isEnabled?: boolean; limitsJsonText?: string }
+// PATCH: upsert entitlement and write audit log
 export async function PATCH(
   req: Request,
   { params }: { params: { tenantId: string } }
 ) {
-  const { tenantId } = params;
+  const tenantId = params?.tenantId;
 
   try {
+    if (!tenantId) {
+      return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+    }
+
     const body = await req.json().catch(() => ({}));
     const moduleKey: string | undefined = body?.moduleKey;
     const isEnabled: boolean | undefined = body?.isEnabled;
-    const limitsJsonText: string | undefined = body?.limitsJsonText;
+    const limitsJsonInput: unknown = body?.limitsJson;
 
-    if (!moduleKey) {
+    if (!moduleKey || typeof moduleKey !== "string") {
       return NextResponse.json({ error: "moduleKey is required" }, { status: 400 });
     }
 
-    // Parse limits JSON text (empty => null)
-    let limits: any | null = null;
-    if (typeof limitsJsonText === "string") {
-      const trimmed = limitsJsonText.trim();
-      if (trimmed.length > 0) {
-        try {
-          limits = JSON.parse(trimmed);
-        } catch {
-          return NextResponse.json({ error: "limitsJson is not valid JSON" }, { status: 400 });
-        }
-      } else {
-        limits = null;
+    // Parse limitsJson
+    let limitsToApply: any | undefined;
+    if (typeof limitsJsonInput === "undefined") {
+      limitsToApply = undefined; // no change
+    } else if (
+      limitsJsonInput === null ||
+      (typeof limitsJsonInput === "string" && limitsJsonInput.trim() === "")
+    ) {
+      limitsToApply = null;
+    } else if (typeof limitsJsonInput === "string") {
+      try {
+        limitsToApply = JSON.parse(limitsJsonInput);
+      } catch {
+        return NextResponse.json(
+          { error: "limitsJson is not valid JSON" },
+          { status: 400 }
+        );
       }
+    } else {
+      limitsToApply = limitsJsonInput;
     }
 
-    // Use composite upsert on the unique/primary key (tenantId + moduleKey)
+    // Before snapshot
+    const before = await prisma.entitlement.findUnique({
+      where: { tenantId_moduleKey: { tenantId, moduleKey } },
+      select: { moduleKey: true, isEnabled: true, limitsJson: true },
+    });
+
+    const updateData: any = {};
+    if (typeof isEnabled === "boolean") updateData.isEnabled = isEnabled;
+    if (typeof limitsToApply !== "undefined") updateData.limitsJson = limitsToApply;
+
     const updated = await prisma.entitlement.upsert({
-      where: {
-        // This assumes your Prisma model has @@id([tenantId, moduleKey]) or @@unique([tenantId, moduleKey])
-        tenantId_moduleKey: { tenantId, moduleKey },
-      },
-      update: {
-        ...(typeof isEnabled === "boolean" ? { isEnabled } : {}),
-        ...(typeof limits !== "undefined" ? { limitsJson: limits } : {}),
-      },
+      where: { tenantId_moduleKey: { tenantId, moduleKey } },
+      update: updateData,
       create: {
         tenantId,
         moduleKey,
-        isEnabled: !!isEnabled,
-        limitsJson: typeof limits === "undefined" ? null : limits,
+        isEnabled: typeof isEnabled === "boolean" ? isEnabled : false,
+        limitsJson: typeof limitsToApply === "undefined" ? null : limitsToApply,
       },
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
 
-    // Audit log (non-fatal if it fails)
+    // Audit log (non-fatal)
     try {
+      const actorUserId = await getActorUserId();
       await prisma.auditLog.create({
         data: {
           tenantId,
-          actorUserId: null, // replace with auth user later
+          actorUserId,
           action: "entitlement.update",
           metaJson: {
             moduleKey,
-            isEnabled:
-              typeof isEnabled === "boolean" ? isEnabled : updated.isEnabled,
-            limitsJson:
-              typeof limits === "undefined" ? updated.limitsJson : limits,
+            before: before ?? null,
+            after: updated,
           },
         },
       });
@@ -11433,11 +11577,12 @@ export async function PATCH(
     return NextResponse.json({ ok: true, entitlement: updated }, { status: 200 });
   } catch (err) {
     console.error("PATCH entitlements error:", err);
-    return NextResponse.json({ error: "Failed to update entitlement" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to update entitlement" },
+      { status: 500 }
+    );
   }
 }
-
-export const dynamic = "force-dynamic";
 
 
 ----- FILE: .\src\app\forbidden\page.tsx -----
