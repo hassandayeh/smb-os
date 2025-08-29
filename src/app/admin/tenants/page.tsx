@@ -1,8 +1,9 @@
 // src/app/admin/tenants/page.tsx
 import CreateTenantButton from "./CreateTenantButton";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 import Link from "next/link";
-import SearchSortBar from "./search-sort-bar"; // ← client component, imported directly
+import SearchSortBar from "./search-sort-bar"; // client component
 
 function fmtDate(d: Date | null) {
   if (!d) return "—";
@@ -25,25 +26,25 @@ type SortKey =
   | "name_asc"
   | "name_desc";
 
-function getOrder(sort: SortKey) {
+function getOrder(sort: SortKey): Prisma.TenantOrderByWithRelationInput[] {
   switch (sort) {
     case "created_asc":
-      return [{ createdAt: "asc" as const }];
+      return [{ createdAt: "asc" }];
     case "activated_desc":
-      return [{ activatedUntil: "desc" as const }];
+      return [{ activatedUntil: "desc" }];
     case "activated_asc":
-      return [{ activatedUntil: "asc" as const }];
+      return [{ activatedUntil: "asc" }];
     case "name_asc":
-      return [{ name: "asc" as const }];
+      return [{ name: "asc" }];
     case "name_desc":
-      return [{ name: "desc" as const }];
+      return [{ name: "desc" }];
     case "created_desc":
     default:
-      return [{ createdAt: "desc" as const }];
+      return [{ createdAt: "desc" }];
   }
 }
 
-const sortOptions = [
+const sortOptions: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "created_desc", label: "Newest first" },
   { value: "created_asc", label: "Oldest first" },
   { value: "activated_desc", label: "Activation (latest)" },
@@ -55,17 +56,29 @@ const sortOptions = [
 export default async function TenantsAdminPage({
   searchParams,
 }: {
-  searchParams?: { q?: string; sort?: SortKey };
+  // Next.js supplies string | string[] | undefined; we read only the ones we care about
+  searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const q = (searchParams?.q ?? "").trim();
-  const sort = (searchParams?.sort as SortKey) || "created_desc";
+  const q = (typeof searchParams?.q === "string" ? searchParams?.q : "").trim();
+  const sort =
+    (typeof searchParams?.sort === "string" &&
+    sortOptions.some((o) => o.value === (searchParams!.sort as SortKey))
+      ? (searchParams!.sort as SortKey)
+      : "created_desc");
+
+  // Build a typed where object (keeps your current behavior)
+  const where: Prisma.TenantWhereInput | undefined = q
+    ? {
+        OR: [
+          { name: { contains: q } },
+          // If your id is a string (e.g., cuid) this is valid; if you prefer strict match, change to { id: { equals: q } }
+          { id: { contains: q } },
+        ],
+      }
+    : undefined;
 
   const tenants = await prisma.tenant.findMany({
-    where: q
-      ? {
-          OR: [{ name: { contains: q } }, { id: { contains: q } }],
-        }
-      : undefined,
+    where,
     orderBy: getOrder(sort),
   });
 
@@ -77,6 +90,12 @@ export default async function TenantsAdminPage({
     return `/admin/tenants/export?${params.toString()}`;
   })();
 
+  // UI-friendly options for the client component (string values)
+  const sortOptionsForUI = sortOptions.map((o) => ({
+    value: o.value,
+    label: o.label,
+  }));
+
   return (
     <div className="mx-auto max-w-6xl p-4">
       <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -86,14 +105,14 @@ export default async function TenantsAdminPage({
           <SearchSortBar
             qInitial={q}
             sortInitial={sort}
-            sortOptions={sortOptions as unknown as { value: string; label: string }[]}
+            sortOptions={sortOptionsForUI}
           />
-          <a
+          <Link
             href={exportHref}
             className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
           >
             Export CSV
-          </a>
+          </Link>
           <CreateTenantButton />
         </div>
       </header>

@@ -1,217 +1,150 @@
-'use client';
+"use client";
 
-import { use, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
 
-type Tenant = { id: string; name: string };
-type Row = {
+type EntRow = {
   moduleKey: string;
   name: string;
   description: string | null;
   isEnabled: boolean;
-  limitsText: string;     // editable textarea (stringified JSON)
-  saving?: boolean;
-  message?: string | null;
-  error?: string | null;
+  limitsJson: any | null;
 };
 
-export default function ManageEntitlementsPage({
-  params,
-}: {
-  params: Promise<{ tenantId: string }>;
-}) {
-  // ⬇️ Unwrap the promised params (Next.js 15 client components)
-  const { tenantId } = use(params);
+export default function ManageEntitlementsPage() {
+  const params = useParams<{ tenantId: string }>();
+  const tenantId = String(params.tenantId);
+  const sp = useSearchParams();
 
-  const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [rows, setRows] = useState<Row[] | null>(null);
+  // preserve q/sort if present
+  const q = sp.get("q") ?? "";
+  const sort = sp.get("sort") ?? "";
+  const qs = new URLSearchParams();
+  if (q) qs.set("q", q);
+  if (sort) qs.set("sort", sort);
+  const qsStr = qs.toString();
+  const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : `/admin/tenants`;
+  const viewTenantHref = qsStr
+    ? `/admin/tenants/${tenantId}?${qsStr}`
+    : `/admin/tenants/${tenantId}`;
+
+  const [rows, setRows] = useState<EntRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(`/api/admin/tenants/${tenantId}/entitlements`, { cache: 'no-store' });
-        const data = await res.json();
-        if (res.ok && mounted) {
-          setTenant(data.tenant);
-          const mapped: Row[] = (data.items as any[]).map((it) => ({
-            moduleKey: it.moduleKey,
-            name: it.name,
-            description: it.description ?? null,
-            isEnabled: !!it.isEnabled,
-            limitsText: it.limitsJson ? JSON.stringify(it.limitsJson, null, 2) : '',
-          }));
-          setRows(mapped);
-        } else {
-          throw new Error(data?.error || 'Failed to load entitlements');
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [tenantId]);
-
-  const title = useMemo(
-    () => (tenant ? `Manage Entitlements — ${tenant.name}` : 'Manage Entitlements'),
-    [tenant]
-  );
-
-  async function saveRow(idx: number) {
-    if (!rows) return;
-    const r = rows[idx];
-
-    // Optimistic UI
-    setRows((cur) =>
-      cur?.map((row, i) => (i === idx ? { ...row, saving: true, message: null, error: null } : row)) ?? null
-    );
-
+  async function load(tid: string) {
+    setLoading(true);
+    setError(null);
     try {
-      const res = await fetch(`/api/admin/tenants/${tenantId}/entitlements`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          moduleKey: r.moduleKey,
-          isEnabled: r.isEnabled,
-          limitsJsonText: r.limitsText,
-        }),
+      const res = await fetch(`/api/admin/tenants/${tid}/entitlements`, {
+        cache: "no-store",
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to save');
+      const data = await res.json().catch(() => ({}));
 
-      setRows((cur) =>
-        cur?.map((row, i) =>
-          i === idx
-            ? {
-                ...row,
-                saving: false,
-                message: 'Saved',
-                error: null,
-                limitsText: data.entitlement?.limitsJson
-                  ? JSON.stringify(data.entitlement.limitsJson, null, 2)
-                  : '',
-              }
-            : row
-        ) ?? null
-      );
+      const items: unknown = Array.isArray((data as any)?.items)
+        ? (data as any).items
+        : Array.isArray((data as any)?.rows)
+        ? (data as any).rows
+        : null;
+
+      if (!res.ok || !Array.isArray(items)) {
+        throw new Error(
+          (data as any)?.error ||
+            `Failed to load entitlements (status ${res.status})`
+        );
+      }
+
+      const mapped: EntRow[] = (items as any[]).map((m) => ({
+        moduleKey: String(m.moduleKey),
+        name: String(m.name ?? m.moduleKey),
+        description: m.description ?? null,
+        isEnabled: !!m.isEnabled,
+        limitsJson: m.limitsJson ?? null,
+      }));
+
+      setRows(mapped);
     } catch (err: any) {
-      setRows((cur) =>
-        cur?.map((row, i) =>
-          i === idx ? { ...row, saving: false, message: null, error: err.message || 'Save failed' } : row
-        ) ?? null
-      );
+      setError(err?.message || "Failed to load entitlements");
+    } finally {
+      setLoading(false);
     }
   }
 
-  if (loading) {
-    return (
-      <section className="container mx-auto max-w-6xl p-4 md:p-6">
-        <div className="text-sm text-muted-foreground">Loading…</div>
-      </section>
-    );
-  }
+  useEffect(() => {
+    if (!tenantId) return;
+    load(tenantId);
+  }, [tenantId]);
 
-  if (!rows || !tenant) {
-    return (
-      <section className="container mx-auto max-w-6xl p-4 md:p-6">
-        <div className="rounded-2xl border bg-card text-card-foreground p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold">Manage Entitlements</h2>
-            <Button variant="outline" asChild>
-              <Link href="/admin/tenants">← Back to Tenants</Link>
-            </Button>
-          </div>
-          <div className="text-sm text-muted-foreground">Nothing to show.</div>
-        </div>
-      </section>
-    );
-  }
+  const btnClass =
+    "inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted";
 
   return (
-    <section className="container mx-auto max-w-6xl p-4 md:p-6">
-      <div className="rounded-2xl border bg-card text-card-foreground p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">{title}</h2>
-          <Button variant="outline" asChild>
-            <Link href="/admin/tenants">← Back to Tenants</Link>
-          </Button>
-        </div>
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Manage Entitlements</h1>
 
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm align-top">
-            <thead>
-              <tr className="border-b text-muted-foreground">
-                <th className="py-2 pe-3 text-left font-medium">Module</th>
-                <th className="py-2 pe-3 text-left font-medium">Enabled</th>
-                <th className="py-2 pe-3 text-left font-medium">limitsJson (editable JSON)</th>
-                <th className="py-2 pe-3 text-left font-medium">Actions</th>
+        <div className="flex items-center gap-2">
+          <Link href={backToListHref} className={btnClass}>
+            Back to list
+          </Link>
+          <Link href={viewTenantHref} className={btnClass}>
+            View Tenant
+          </Link>
+        </div>
+      </div>
+
+      {loading && <div className="text-sm text-muted-foreground">Loading…</div>}
+      {error && (
+        <div className="rounded-md border p-3 text-sm bg-red-50 border-red-200">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && (
+        <div className="overflow-x-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-left">
+              <tr>
+                <th className="px-3 py-2">Module</th>
+                <th className="px-3 py-2">Description</th>
+                <th className="px-3 py-2">Enabled</th>
+                <th className="px-3 py-2">Limits</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, idx) => (
-                <tr key={row.moduleKey} className="border-b last:border-0">
-                  <td className="py-3 pe-3">
-                    <div className="font-medium">{row.name}</div>
-                    <div className="text-muted-foreground">{row.moduleKey}</div>
-                    {row.description && (
-                      <div className="text-muted-foreground">{row.description}</div>
-                    )}
-                  </td>
-
-                  <td className="py-3 pe-3">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={row.isEnabled}
-                        onChange={(e) =>
-                          setRows((cur) =>
-                            cur?.map((r, i) => (i === idx ? { ...r, isEnabled: e.target.checked } : r)) ?? null
-                          )
-                        }
-                      />
-                      <span>{row.isEnabled ? 'Enabled' : 'Disabled'}</span>
-                    </label>
-                  </td>
-
-                  <td className="py-3 pe-3 w-[520px]">
-                    <textarea
-                      className="w-full rounded-lg border px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
-                      rows={5}
-                      placeholder='e.g. { "maxUsers": 3 }'
-                      value={row.limitsText}
-                      onChange={(e) =>
-                        setRows((cur) =>
-                          cur?.map((r, i) => (i === idx ? { ...r, limitsText: e.target.value } : r)) ?? null
-                        )
-                      }
-                    />
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      Leave empty for <code>null</code>. Must be valid JSON if provided.
-                    </div>
-                  </td>
-
-                  <td className="py-3 pe-3 w-[160px]">
-                    <div className="flex flex-col gap-2">
-                      <Button size="sm" onClick={() => saveRow(idx)} disabled={row.saving}>
-                        {row.saving ? 'Saving…' : 'Save'}
-                      </Button>
-                      {row.message && <div className="text-xs text-emerald-600">{row.message}</div>}
-                      {row.error && <div className="text-xs text-destructive">{row.error}</div>}
-                    </div>
+              {rows.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={4}
+                    className="px-3 py-8 text-center text-muted-foreground"
+                  >
+                    No modules found.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                rows.map((r) => (
+                  <tr key={r.moduleKey} className="border-t">
+                    <td className="px-3 py-2 font-medium">
+                      {r.name}{" "}
+                      <span className="text-muted-foreground">
+                        ({r.moduleKey})
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">{r.description || "—"}</td>
+                    <td className="px-3 py-2">{r.isEnabled ? "On" : "Off"}</td>
+                    <td className="px-3 py-2">
+                      <pre className="text-xs bg-gray-50 border rounded p-2 max-w-[40ch] overflow-x-auto">
+                        {r.limitsJson ? JSON.stringify(r.limitsJson) : "—"}
+                      </pre>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
-      </div>
-    </section>
+      )}
+    </div>
   );
 }
