@@ -1,120 +1,111 @@
+// src/app/admin/audit/filters.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
-type Props = {
-  // keep page size/server defaults in sync with page.tsx
-  pageSize?: number;
+export type AuditFiltersState = {
+  tenant?: string; // id OR name (partial)
+  action?: string;
+  from?: string;   // yyyy-mm-dd
+  to?: string;     // yyyy-mm-dd
 };
 
-export default function AuditFilters({ pageSize = 20 }: Props) {
-  const router = useRouter();
-  const sp = useSearchParams();
+export default function AuditFilters({ initial }: { initial: AuditFiltersState }) {
+  const formRef = useRef<HTMLFormElement | null>(null);
 
-  const [tenantId, setTenantId] = useState(sp.get("tenantId") ?? "");
-  const [action, setAction] = useState(sp.get("action") ?? "");
-  const [from, setFrom] = useState(sp.get("from") ?? "");
-  const [to, setTo] = useState(sp.get("to") ?? "");
-
-  // Build and navigate to URL with filters (GET)
-  function apply() {
-    const params = new URLSearchParams();
-    if (tenantId) params.set("tenantId", tenantId);
-    if (action) params.set("action", action);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    // reset to first page when filters change
-    params.set("page", "1");
-    router.replace(`/admin/audit?${params.toString()}`);
-  }
-
-  function clearAll() {
-    router.replace("/admin/audit?page=1");
-    setTenantId("");
-    setAction("");
-    setFrom("");
-    setTo("");
-  }
-
-  // Enter key on any input triggers apply
+  // Debounced auto-submit on input/change
   useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      if (e.key === "Enter") apply();
-    }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, action, from, to]);
+    const form = formRef.current;
+    if (!form) return;
 
-  // Debounced auto-apply after 500ms; skip initial mount
-  const didMount = useRef(false);
-  useEffect(() => {
-    if (!didMount.current) {
-      didMount.current = true;
-      return;
-    }
-    const t = setTimeout(() => apply(), 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, action, from, to]);
+    let timer: any;
+    const handler = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
+      }, 350);
+    };
+
+    form.addEventListener("input", handler);
+    form.addEventListener("change", handler);
+    return () => {
+      clearTimeout(timer);
+      form.removeEventListener("input", handler);
+      form.removeEventListener("change", handler);
+    };
+  }, []);
+
+  // Build current query for Export link
+  const q = new URLSearchParams();
+  if (initial.tenant) q.set("tenant", initial.tenant);
+  if (initial.action) q.set("action", initial.action);
+  if (initial.from) q.set("from", initial.from);
+  if (initial.to) q.set("to", initial.to);
 
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">Tenant ID</label>
-        <input
-          className="h-9 rounded-md border px-3"
-          placeholder="Exact tenantId"
-          value={tenantId}
-          onChange={(e) => setTenantId(e.target.value)}
-        />
-      </div>
+    <form
+      ref={formRef}
+      method="get"
+      action="/admin/audit"
+      className="grid grid-cols-1 gap-3 md:grid-cols-5"
+    >
+      <input
+        name="tenant"
+        defaultValue={initial.tenant ?? ""}
+        placeholder="Tenant ID or Name"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="Tenant ID or Name"
+      />
+      <input
+        name="action"
+        defaultValue={initial.action ?? ""}
+        placeholder='e.g. "entitlement.update"'
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="Action"
+      />
+      <input
+        type="date"
+        name="from"
+        defaultValue={initial.from ?? ""}
+        title="From (UTC)"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="From date (UTC)"
+      />
+      <input
+        type="date"
+        name="to"
+        defaultValue={initial.to ?? ""}
+        title="To (UTC)"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="To date (UTC)"
+      />
 
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">Action</label>
-        <input
-          className="h-9 rounded-md border px-3"
-          placeholder='e.g. "entitlement.update"'
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-        />
-      </div>
-
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">From (UTC)</label>
-        <input
-          type="date"
-          className="h-9 rounded-md border px-3"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-      </div>
-
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">To (UTC)</label>
-        <input
-          type="date"
-          className="h-9 rounded-md border px-3"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
-      </div>
-
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <button
-          onClick={apply}
-          className="h-9 rounded-md bg-primary px-4 text-primary-foreground"
+          type="submit"
+          className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+          title="Apply now (Enter)"
         >
           Apply
         </button>
-        <button
-          onClick={clearAll}
-          className="h-9 rounded-md border px-4"
+
+        <Link href="/admin/audit">
+          <Button type="button" variant="secondary">
+            Clear
+          </Button>
+        </Link>
+
+        {/* Export respects active filters */}
+        <Link
+          href={`/admin/audit/export${q.toString() ? `?${q.toString()}` : ""}`}
+          prefetch={false}
         >
-          Clear
-        </button>
+          <Button type="button">Export CSV</Button>
+        </Link>
       </div>
-    </div>
+    </form>
   );
 }

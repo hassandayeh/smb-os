@@ -1,182 +1,182 @@
 // src/app/admin/audit/[id]/page.tsx
-import CopyJson from "@/components/CopyJson";
-import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import CopyJson from "@/components/CopyJson"; // expects { text: string; targetId?: string }
+
+type EntMeta = {
+  moduleKey?: string;
+  before?: { isEnabled?: boolean | null } | null;
+  after?: { isEnabled?: boolean | null } | null;
+};
+
+function toBoolOrNull(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+function label(v: boolean | null): "ON" | "OFF" | "—" {
+  if (v === true) return "ON";
+  if (v === false) return "OFF";
+  return "—";
+}
+
+function formatEntitlementAction(meta: EntMeta | null | undefined): string {
+  if (!meta) return "Entitlement updated";
+  const moduleKey = meta.moduleKey ?? "—";
+  const before = toBoolOrNull(meta.before?.isEnabled);
+  const after = toBoolOrNull(meta.after?.isEnabled);
+  if (before === null && after === null) {
+    return `Entitlement updated: ${moduleKey}`;
+  }
+  return `Entitlement updated: ${moduleKey} (${label(before)} → ${label(after)})`;
+}
+
+function safeParseMeta(metaJson: unknown): EntMeta | null {
+  try {
+    if (!metaJson) return null;
+    if (typeof metaJson === "string") return JSON.parse(metaJson);
+    if (typeof metaJson === "object") return metaJson as EntMeta;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function fmtDate(d: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(d);
+}
 
 export const dynamic = "force-dynamic";
 
-function fmtDate(d: Date | null) {
-  if (!d) return "—";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-    }).format(d);
-  } catch {
-    return "—";
-  }
-}
-
-function friendlyAction(action: string) {
-  const map: Record<string, string> = {
-    "entitlement.update": "Entitlement updated",
-    "tenant.create": "Tenant created",
-    "tenant.update": "Tenant updated",
-    "tenant.activate": "Activation extended",
-  };
-  return map[action] ?? action;
-}
-
-function summarize(action: string, meta: any): string | null {
-  // Add small summaries for common actions
-  if (action === "entitlement.update" && meta) {
-    const mk = meta.moduleKey ?? "—";
-    const enabled =
-      typeof meta.isEnabled === "boolean" ? (meta.isEnabled ? "ON" : "OFF") : "—";
-    return `Entitlement updated: ${mk} → ${enabled}`;
-  }
-  if (action === "tenant.update" && meta?.changes) {
-    try {
-      const changed = Object.keys(meta.changes as object);
-      if (changed.length) return `Tenant fields updated: ${changed.join(", ")}`;
-    } catch {}
-  }
-  if (action === "tenant.create" && meta?.tenantName) {
-    return `Tenant created: ${meta.tenantName}`;
-  }
-  if (action === "tenant.activate" && meta?.activatedUntil) {
-    return `Activation extended to ${meta.activatedUntil}`;
-  }
-  return null;
-}
-
 export default async function AuditEntryPage({
   params,
-  searchParams,
 }: {
   params: { id: string };
-  searchParams: Record<string, string | string[] | undefined>;
 }) {
   const id = params.id;
 
+  // Load audit entry (no relation includes → avoids TS relation-name issues)
   const entry = await prisma.auditLog.findUnique({
     where: { id },
+    select: {
+      id: true,
+      action: true,
+      createdAt: true,
+      metaJson: true,
+      tenantId: true,
+      actorUserId: true,
+    },
   });
 
   if (!entry) {
     return (
-      <div className="max-w-4xl mx-auto p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Audit Entry</h1>
-          <Link href="/admin/audit">
-            <Button variant="secondary">Back to list</Button>
+      <div className="p-6">
+        <div className="mb-4">
+          <Link
+            href="/admin/audit"
+            className="inline-flex items-center rounded-xl border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Back to list
           </Link>
         </div>
-        <div className="text-muted-foreground">Entry not found.</div>
+        <h1 className="text-xl font-semibold">Audit entry not found</h1>
       </div>
     );
   }
 
-  // Load tenant (name) and actor (display)
+  // Look up display names
   const [tenant, actor] = await Promise.all([
-    prisma.tenant.findUnique({
-      where: { id: entry.tenantId },
-      select: { id: true, name: true },
-    }),
+    entry.tenantId
+      ? prisma.tenant.findUnique({
+          where: { id: entry.tenantId },
+          select: { name: true },
+        })
+      : Promise.resolve(null),
     entry.actorUserId
       ? prisma.user.findUnique({
           where: { id: entry.actorUserId },
-          select: { id: true, name: true, email: true },
+          select: { name: true },
         })
       : Promise.resolve(null),
   ]);
 
-  const titleTenant = tenant?.name || tenant?.id || entry.tenantId || "—";
-  const meta =
-    typeof entry.metaJson === "object" ? entry.metaJson : (null as any);
-  const friendly = summarize(entry.action, meta) ?? friendlyAction(entry.action);
+  const meta = safeParseMeta(entry.metaJson);
+  const actionLine = (entry.action ?? "").toLowerCase().startsWith("entitlement")
+    ? formatEntitlementAction(meta)
+    : entry.action ?? "—";
 
-  // Preserve filters in Back button if present
-  const q = new URLSearchParams();
-  const keys = ["tenantId", "action", "from", "to"];
-  keys.forEach((k) => {
-    const v = searchParams[k];
-    if (typeof v === "string" && v) q.set(k, v);
-  });
-  const backHref = `/admin/audit${q.toString() ? `?${q.toString()}` : ""}`;
+  // ✅ Prepare pretty string once; reuse for CopyJson + <pre>
+  const prettyMeta =
+    typeof entry.metaJson === "string"
+      ? entry.metaJson
+      : JSON.stringify(entry.metaJson, null, 2);
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Audit Entry — {titleTenant}</h1>
-        <Link href={backHref}>
-          <Button variant="secondary">Back to list</Button>
+    <div className="p-6 space-y-6">
+      <div className="flex justify-end">
+        <Link
+          href="/admin/audit"
+          className="inline-flex items-center rounded-xl border px-4 py-2 text-sm font-medium hover:bg-muted"
+        >
+          Back to list
         </Link>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="border rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">ID</div>
-          <div className="font-mono">{entry.id}</div>
+      <h1 className="text-2xl font-bold">
+        Audit Entry — {tenant?.name ?? "—"}
+      </h1>
+
+      {/* Details */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="rounded-xl border p-4">
+          <div className="text-xs text-muted-foreground mb-1">ID</div>
+          <div className="font-mono break-all text-sm">{entry.id}</div>
         </div>
-        <div className="border rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">Tenant</div>
-          <div>{tenant?.name || "—"}</div>
+
+        <div className="rounded-xl border p-4">
+          <div className="text-xs text-muted-foreground mb-1">Tenant</div>
+          <div className="text-sm">{tenant?.name ?? entry.tenantId ?? "—"}</div>
         </div>
-        <div className="border rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">Action</div>
-          <div>{friendly}</div>
+
+        <div className="rounded-xl border p-4">
+          <div className="text-xs text-muted-foreground mb-1">Action</div>
+          <div className="text-sm">{actionLine}</div>
         </div>
-        <div className="border rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">Actor</div>
-          <div>{actor?.name || actor?.email || "—"}</div>
+
+        <div className="rounded-xl border p-4">
+          <div className="text-xs text-muted-foreground mb-1">Actor</div>
+          <div className="text-sm">{actor?.name ?? entry.actorUserId ?? "—"}</div>
         </div>
-        <div className="border rounded-lg p-4">
-          <div className="text-sm text-muted-foreground">Created</div>
-          <div>{fmtDate(entry.createdAt)}</div>
+
+        <div className="rounded-xl border p-4 md:col-span-2">
+          <div className="text-xs text-muted-foreground mb-1">Created</div>
+          <div className="text-sm">{fmtDate(entry.createdAt)}</div>
         </div>
       </div>
 
-{/* Raw meta JSON */}
-<div className="border rounded-lg p-4 space-y-3">
-  <details open>
-    <summary className="cursor-pointer font-medium">metaJson</summary>
-    <CopyJson text={JSON.stringify(entry.metaJson, null, 2)} targetId="meta" />
-    <pre
-      id="meta"
-      className="mt-3 bg-muted/40 rounded p-3 overflow-auto text-sm"
-    >
-{JSON.stringify(entry.metaJson, null, 2)}
-    </pre>
-  </details>
-</div>
+      {/* metaJson viewer */}
+      <div className="rounded-xl border">
+        <details open className="p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            metaJson
+          </summary>
 
-      {/* Tiny client script to support Copy JSON without extra components */}
-      <script
-        // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{
-          __html: `
-          (function(){
-            const btn = document.currentScript?.previousElementSibling?.querySelector('button');
-            const pre = document.currentScript?.previousElementSibling?.querySelector('pre');
-            if(btn && pre){
-              btn.addEventListener('click', async () => {
-                try {
-                  await navigator.clipboard.writeText(pre.textContent || '');
-                  btn.textContent = 'Copied';
-                  setTimeout(()=>btn.textContent='Copy JSON', 1000);
-                } catch {}
-              });
-            }
-          })();
-        `,
-        }}
-      />
+          {/* ✅ Copy JSON button (uses text prop) */}
+          <div className="mt-3">
+            <CopyJson text={prettyMeta} />
+          </div>
+
+          {/* Pretty JSON */}
+          <pre className="mt-3 overflow-auto rounded-lg bg-muted p-4 text-sm">
+{prettyMeta}
+          </pre>
+        </details>
+      </div>
     </div>
   );
 }

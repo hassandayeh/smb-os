@@ -1,3 +1,4 @@
+// src/app/admin/audit/export/route.ts
 import { prisma } from "@/lib/prisma";
 
 // Parse YYYY-MM-DD (UTC date only) into a Date at 00:00:00Z
@@ -10,14 +11,24 @@ function parseDateOnly(d?: string | null) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const tenantId = url.searchParams.get("tenantId") || undefined;
+
+  // NEW: tenant = id or name (partial)
+  const tenant = url.searchParams.get("tenant") || undefined;
   const action = url.searchParams.get("action") || undefined;
   const from = parseDateOnly(url.searchParams.get("from"));
   const toRaw = parseDateOnly(url.searchParams.get("to"));
 
-  const where: any = {};
-  if (tenantId) where.tenantId = tenantId;
-  if (action) where.action = { contains: action }; // SQLite: case-sensitive contains
+  const where: any = {
+    ...(tenant
+      ? {
+          OR: [
+            { tenantId: { contains: tenant } },        // partial ID
+            { tenant: { name: { contains: tenant } } }, // partial name (SQLite contains is case-sensitive)
+          ],
+        }
+      : {}),
+    ...(action ? { action: { contains: action } } : {}),
+  };
 
   if (from || toRaw) {
     where.createdAt = {};
@@ -37,20 +48,12 @@ export async function GET(req: Request) {
     take: LIMIT,
   });
 
-  // CSV header
-  const header = [
-    "id",
-    "createdAt",
-    "tenantId",
-    "actorUserId",
-    "action",
-    "metaJson",
-  ].join(",");
+  // CSV header (kept as-is)
+  const header = ["id", "createdAt", "tenantId", "actorUserId", "action", "metaJson"].join(",");
 
   const escape = (v: unknown) => {
     if (v == null) return "";
     const s = String(v);
-    // Escape " by doubling it; wrap in quotes if comma/quote/newline present
     const needsQuotes = /[",\n]/.test(s);
     const out = s.replace(/"/g, '""');
     return needsQuotes ? `"${out}"` : out;
@@ -63,7 +66,6 @@ export async function GET(req: Request) {
       escape(l.tenantId),
       escape(l.actorUserId ?? ""),
       escape(l.action),
-      // ensure metaJson is a single field
       escape(typeof l.metaJson === "string" ? l.metaJson : JSON.stringify(l.metaJson)),
     ].join(",")
   );

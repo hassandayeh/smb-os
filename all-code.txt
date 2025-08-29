@@ -8982,124 +8982,115 @@ export default function AdminIndex() {
 
 ----- FILE: .\src\app\admin\audit\filters.tsx -----
 
+// src/app/admin/audit/filters.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
-type Props = {
-  // keep page size/server defaults in sync with page.tsx
-  pageSize?: number;
+export type AuditFiltersState = {
+  tenant?: string; // id OR name (partial)
+  action?: string;
+  from?: string;   // yyyy-mm-dd
+  to?: string;     // yyyy-mm-dd
 };
 
-export default function AuditFilters({ pageSize = 20 }: Props) {
-  const router = useRouter();
-  const sp = useSearchParams();
+export default function AuditFilters({ initial }: { initial: AuditFiltersState }) {
+  const formRef = useRef<HTMLFormElement | null>(null);
 
-  const [tenantId, setTenantId] = useState(sp.get("tenantId") ?? "");
-  const [action, setAction] = useState(sp.get("action") ?? "");
-  const [from, setFrom] = useState(sp.get("from") ?? "");
-  const [to, setTo] = useState(sp.get("to") ?? "");
-
-  // Build and navigate to URL with filters (GET)
-  function apply() {
-    const params = new URLSearchParams();
-    if (tenantId) params.set("tenantId", tenantId);
-    if (action) params.set("action", action);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    // reset to first page when filters change
-    params.set("page", "1");
-    router.replace(`/admin/audit?${params.toString()}`);
-  }
-
-  function clearAll() {
-    router.replace("/admin/audit?page=1");
-    setTenantId("");
-    setAction("");
-    setFrom("");
-    setTo("");
-  }
-
-  // Enter key on any input triggers apply
+  // Debounced auto-submit on input/change
   useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      if (e.key === "Enter") apply();
-    }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, action, from, to]);
+    const form = formRef.current;
+    if (!form) return;
 
-  // Debounced auto-apply after 500ms; skip initial mount
-  const didMount = useRef(false);
-  useEffect(() => {
-    if (!didMount.current) {
-      didMount.current = true;
-      return;
-    }
-    const t = setTimeout(() => apply(), 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, action, from, to]);
+    let timer: any;
+    const handler = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
+      }, 350);
+    };
+
+    form.addEventListener("input", handler);
+    form.addEventListener("change", handler);
+    return () => {
+      clearTimeout(timer);
+      form.removeEventListener("input", handler);
+      form.removeEventListener("change", handler);
+    };
+  }, []);
+
+  // Build current query for Export link
+  const q = new URLSearchParams();
+  if (initial.tenant) q.set("tenant", initial.tenant);
+  if (initial.action) q.set("action", initial.action);
+  if (initial.from) q.set("from", initial.from);
+  if (initial.to) q.set("to", initial.to);
 
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">Tenant ID</label>
-        <input
-          className="h-9 rounded-md border px-3"
-          placeholder="Exact tenantId"
-          value={tenantId}
-          onChange={(e) => setTenantId(e.target.value)}
-        />
-      </div>
+    <form
+      ref={formRef}
+      method="get"
+      action="/admin/audit"
+      className="grid grid-cols-1 gap-3 md:grid-cols-5"
+    >
+      <input
+        name="tenant"
+        defaultValue={initial.tenant ?? ""}
+        placeholder="Tenant ID or Name"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="Tenant ID or Name"
+      />
+      <input
+        name="action"
+        defaultValue={initial.action ?? ""}
+        placeholder='e.g. "entitlement.update"'
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="Action"
+      />
+      <input
+        type="date"
+        name="from"
+        defaultValue={initial.from ?? ""}
+        title="From (UTC)"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="From date (UTC)"
+      />
+      <input
+        type="date"
+        name="to"
+        defaultValue={initial.to ?? ""}
+        title="To (UTC)"
+        className="h-9 rounded-md border px-3 text-sm"
+        aria-label="To date (UTC)"
+      />
 
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">Action</label>
-        <input
-          className="h-9 rounded-md border px-3"
-          placeholder='e.g. "entitlement.update"'
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-        />
-      </div>
-
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">From (UTC)</label>
-        <input
-          type="date"
-          className="h-9 rounded-md border px-3"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-      </div>
-
-      <div className="flex flex-col">
-        <label className="text-xs text-muted-foreground">To (UTC)</label>
-        <input
-          type="date"
-          className="h-9 rounded-md border px-3"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
-      </div>
-
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <button
-          onClick={apply}
-          className="h-9 rounded-md bg-primary px-4 text-primary-foreground"
+          type="submit"
+          className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+          title="Apply now (Enter)"
         >
           Apply
         </button>
-        <button
-          onClick={clearAll}
-          className="h-9 rounded-md border px-4"
+
+        <Link href="/admin/audit">
+          <Button type="button" variant="secondary">
+            Clear
+          </Button>
+        </Link>
+
+        {/* Export respects active filters */}
+        <Link
+          href={`/admin/audit/export${q.toString() ? `?${q.toString()}` : ""}`}
+          prefetch={false}
         >
-          Clear
-        </button>
+          <Button type="button">Export CSV</Button>
+        </Link>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -9111,10 +9102,8 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui/button";
 
-export const dynamic = "force-dynamic";
-
 type Search = {
-  tenantId?: string;
+  tenant?: string; // id or name (partial)
   action?: string;
   from?: string; // yyyy-mm-dd
   to?: string;   // yyyy-mm-dd
@@ -9157,24 +9146,48 @@ function parseDateBoundaries(from?: string, to?: string) {
 }
 
 async function getData(searchParams: Search) {
-  const { tenantId, action, from, to } = searchParams;
+  const { tenant, action, from, to } = searchParams;
 
+  // Step A: if tenant query present, find matching tenant IDs by name OR id (partial).
+  let matchedTenantIds: string[] = [];
+  if (tenant && tenant.trim()) {
+    const tMatches = await prisma.tenant.findMany({
+      where: {
+        OR: [
+          { id: { contains: tenant } },   // partial ID
+          { name: { contains: tenant } }, // partial Name (SQLite contains is case-sensitive)
+        ],
+      },
+      select: { id: true },
+      take: 500, // safety cap
+    });
+    matchedTenantIds = tMatches.map((t) => t.id);
+  }
+
+  // Step B: build audit where (no relations!)
   const where: any = {
-    ...(tenantId ? { tenantId } : {}),
+    ...(tenant
+      ? {
+          OR: [
+            { tenantId: { contains: tenant } }, // partial ID match directly
+            ...(matchedTenantIds.length > 0
+              ? [{ tenantId: { in: matchedTenantIds } }]
+              : []),
+          ],
+        }
+      : {}),
     ...(action ? { action: { contains: action } } : {}),
     ...parseDateBoundaries(from, to),
   };
 
-  // 1) Fetch audit log rows (no includes to keep schema-agnostic)
+  // 1) Fetch audit log rows
   const entries = await prisma.auditLog.findMany({
     where,
     orderBy: { createdAt: "desc" },
   });
 
-  // 2) Batch-load tenants for names
-  const tenantIds = Array.from(new Set(entries.map((e) => e.tenantId))).filter(
-    Boolean
-  );
+  // 2) Batch-load tenants for names (to display the "Tenant Name" column)
+  const tenantIds = Array.from(new Set(entries.map((e) => e.tenantId))).filter(Boolean);
   const tenants =
     tenantIds.length > 0
       ? await prisma.tenant.findMany({
@@ -9185,9 +9198,7 @@ async function getData(searchParams: Search) {
   const tenantMap = new Map(tenants.map((t) => [t.id, t.name ?? "—"]));
 
   // 3) Batch-load users for actor display
-  const actorIds = Array.from(
-    new Set(entries.map((e) => e.actorUserId).filter(Boolean) as string[])
-  );
+  const actorIds = Array.from(new Set(entries.map((e) => e.actorUserId).filter(Boolean) as string[]));
   const users =
     actorIds.length > 0
       ? await prisma.user.findMany({
@@ -9195,81 +9206,75 @@ async function getData(searchParams: Search) {
           select: { id: true, name: true, email: true },
         })
       : [];
-  const userMap = new Map(
-    users.map((u) => [u.id, u.name || u.email || "—"])
-  );
+  const userMap = new Map(users.map((u) => [u.id, u.name || u.email || "—"]));
 
   return { entries, tenantMap, userMap };
 }
 
-export default async function AuditLogPage({
-  searchParams,
-}: {
-  searchParams: Search;
-}) {
+export default async function AuditLogPage({ searchParams }: { searchParams: Search }) {
   const { entries, tenantMap, userMap } = await getData(searchParams);
   const q = searchParams || {};
 
+  // Build shared querystring for deep links & export
   const query = new URLSearchParams();
-  if (q.tenantId) query.set("tenantId", q.tenantId);
+  if (q.tenant) query.set("tenant", q.tenant);
   if (q.action) query.set("action", q.action);
   if (q.from) query.set("from", q.from);
   if (q.to) query.set("to", q.to);
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Audit Log</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <Link href="/admin">
             <Button variant="secondary">Admin Console</Button>
           </Link>
-          <Link href={`/admin/audit/export?${query.toString()}`}>
-            <Button variant="secondary">Export CSV</Button>
+          <Link
+            href={`/admin/audit/export${query.toString() ? `?${query.toString()}` : ""}`}
+            prefetch={false}
+          >
+            <Button>Export CSV</Button>
           </Link>
         </div>
       </div>
 
       {/* Filters */}
-      <form className="grid grid-cols-1 sm:grid-cols-5 gap-3" method="GET">
-        <div className="flex flex-col">
-          <label className="text-sm text-muted-foreground">Tenant ID</label>
-          <input
-            name="tenantId"
-            defaultValue={q.tenantId ?? ""}
-            className="border rounded px-3 py-2"
-            placeholder="Exact tenantId"
-          />
-        </div>
-        <div className="flex flex-col">
-          <label className="text-sm text-muted-foreground">Action</label>
-          <input
-            name="action"
-            defaultValue={q.action ?? ""}
-            className="border rounded px-3 py-2"
-            placeholder='e.g. "entitlement.update"'
-          />
-        </div>
-        <div className="flex flex-col">
-          <label className="text-sm text-muted-foreground">From (UTC)</label>
-          <input
-            type="date"
-            name="from"
-            defaultValue={q.from ?? ""}
-            className="border rounded px-3 py-2"
-          />
-        </div>
-        <div className="flex flex-col">
-          <label className="text-sm text-muted-foreground">To (UTC)</label>
-          <input
-            type="date"
-            name="to"
-            defaultValue={q.to ?? ""}
-            className="border rounded px-3 py-2"
-          />
-        </div>
-        <div className="flex items-end gap-2">
-          <Button type="submit">Apply</Button>
+      <form className="grid grid-cols-1 gap-3 md:grid-cols-5">
+        <input
+          name="tenant"
+          defaultValue={q.tenant ?? ""}
+          placeholder="Tenant ID or Name"
+          className="h-9 rounded-md border px-3 text-sm"
+        />
+        <input
+          name="action"
+          defaultValue={q.action ?? ""}
+          placeholder='e.g. "entitlement.update"'
+          className="h-9 rounded-md border px-3 text-sm"
+        />
+        <input
+          type="date"
+          name="from"
+          defaultValue={q.from ?? ""}
+          title="From (UTC)"
+          className="h-9 rounded-md border px-3 text-sm"
+        />
+        <input
+          type="date"
+          name="to"
+          defaultValue={q.to ?? ""}
+          title="To (UTC)"
+          className="h-9 rounded-md border px-3 text-sm"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+            title="Apply now (Enter)"
+          >
+            Apply
+          </button>
           <Link href="/admin/audit">
             <Button type="button" variant="secondary">
               Clear
@@ -9294,8 +9299,7 @@ export default async function AuditLogPage({
           <tbody className="[&>tr>td]:px-4 [&>tr>td]:py-2">
             {entries.map((e) => {
               const tenantName = tenantMap.get(e.tenantId) ?? "—";
-              const actor =
-                (e.actorUserId ? userMap.get(e.actorUserId) : undefined) ?? "—";
+              const actor = (e.actorUserId ? userMap.get(e.actorUserId) : undefined) ?? "—";
               return (
                 <tr key={e.id} className="border-t">
                   <td className="whitespace-nowrap">{fmtDate(e.createdAt)}</td>
@@ -9316,7 +9320,7 @@ export default async function AuditLogPage({
             })}
             {entries.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-8 text-muted-foreground">
+                <td colSpan={6} className="py-8 text-center text-muted-foreground">
                   No audit entries found.
                 </td>
               </tr>
@@ -9398,6 +9402,7 @@ export default function PrettyJson({ value }: { value: unknown }) {
 
 ----- FILE: .\src\app\admin\audit\export\route.ts -----
 
+// src/app/admin/audit/export/route.ts
 import { prisma } from "@/lib/prisma";
 
 // Parse YYYY-MM-DD (UTC date only) into a Date at 00:00:00Z
@@ -9410,14 +9415,24 @@ function parseDateOnly(d?: string | null) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const tenantId = url.searchParams.get("tenantId") || undefined;
+
+  // NEW: tenant = id or name (partial)
+  const tenant = url.searchParams.get("tenant") || undefined;
   const action = url.searchParams.get("action") || undefined;
   const from = parseDateOnly(url.searchParams.get("from"));
   const toRaw = parseDateOnly(url.searchParams.get("to"));
 
-  const where: any = {};
-  if (tenantId) where.tenantId = tenantId;
-  if (action) where.action = { contains: action }; // SQLite: case-sensitive contains
+  const where: any = {
+    ...(tenant
+      ? {
+          OR: [
+            { tenantId: { contains: tenant } },        // partial ID
+            { tenant: { name: { contains: tenant } } }, // partial name (SQLite contains is case-sensitive)
+          ],
+        }
+      : {}),
+    ...(action ? { action: { contains: action } } : {}),
+  };
 
   if (from || toRaw) {
     where.createdAt = {};
@@ -9437,20 +9452,12 @@ export async function GET(req: Request) {
     take: LIMIT,
   });
 
-  // CSV header
-  const header = [
-    "id",
-    "createdAt",
-    "tenantId",
-    "actorUserId",
-    "action",
-    "metaJson",
-  ].join(",");
+  // CSV header (kept as-is)
+  const header = ["id", "createdAt", "tenantId", "actorUserId", "action", "metaJson"].join(",");
 
   const escape = (v: unknown) => {
     if (v == null) return "";
     const s = String(v);
-    // Escape " by doubling it; wrap in quotes if comma/quote/newline present
     const needsQuotes = /[",\n]/.test(s);
     const out = s.replace(/"/g, '""');
     return needsQuotes ? `"${out}"` : out;
@@ -9463,7 +9470,6 @@ export async function GET(req: Request) {
       escape(l.tenantId),
       escape(l.actorUserId ?? ""),
       escape(l.action),
-      // ensure metaJson is a single field
       escape(typeof l.metaJson === "string" ? l.metaJson : JSON.stringify(l.metaJson)),
     ].join(",")
   );
@@ -11069,10 +11075,6 @@ export default function ManageEntitlementsPage() {
   const tenantId = String(params.tenantId);
   const sp = useSearchParams();
 
-  // --- tenant name (header) ---
-  const [tenantName, setTenantName] = useState<string | null>(null);
-  const [tenantNameLoading, setTenantNameLoading] = useState<boolean>(true);
-
   // preserve q/sort if present
   const q = sp.get("q") ?? "";
   const sort = sp.get("sort") ?? "";
@@ -11137,32 +11139,11 @@ export default function ManageEntitlementsPage() {
     }
   }
 
-  // --- single, robust tenant name lookup (no extra endpoints) ---
-  async function loadTenantName(tid: string) {
-    setTenantNameLoading(true);
-    try {
-      const res = await fetch(`/api/admin/tenants/${tid}`, { cache: "no-store" });
-      const data = await res.json().catch(() => null);
-      const name =
-        (data && typeof data.name === "string" && data.name) ||
-        (data && data.item && typeof data.item.name === "string" && data.item.name) ||
-        (data && data.tenant && typeof data.tenant.name === "string" && data.tenant.name) ||
-        null;
-      setTenantName(name);
-    } catch {
-      setTenantName(null);
-    } finally {
-      setTenantNameLoading(false);
-    }
-  }
-
   useEffect(() => {
     if (!tenantId) return;
     load(tenantId);
-    loadTenantName(tenantId);
   }, [tenantId]);
 
-  // original button look (kept)
   const btnClass =
     "inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted";
 
@@ -11191,6 +11172,7 @@ export default function ManageEntitlementsPage() {
 
       // mark as saved (show brief success) and refresh from server to ensure truth
       setRowSaved((prev) => ({ ...prev, [moduleKey]: true }));
+      // auto-hide "Saved" after 1.5s
       setTimeout(() => {
         setRowSaved((prev) => ({ ...prev, [moduleKey]: false }));
       }, 1500);
@@ -11220,14 +11202,7 @@ export default function ManageEntitlementsPage() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          Manage Entitlements
-          {tenantNameLoading ? (
-            <span className="text-muted-foreground"> — …</span>
-          ) : tenantName ? (
-            <span className="text-muted-foreground"> — {tenantName}</span>
-          ) : null}
-        </h1>
+        <h1 className="text-2xl font-semibold">Manage Entitlements</h1>
 
         <div className="flex items-center gap-2">
           <Link href="/admin" className={btnClass}>
@@ -11343,7 +11318,6 @@ async function safeText(res: Response) {
     return null;
   }
 }
-
 
 ----- FILE: .\src\app\api\admin\tenants\route.ts -----
 
