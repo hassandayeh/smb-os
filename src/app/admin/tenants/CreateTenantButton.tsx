@@ -43,9 +43,9 @@ export default function CreateTenantButton() {
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || "Failed to create tenant");
       }
-      // Refresh list then navigate to Manage page
+
+      // ✅ Stay on the list: refresh the page data, close dialog, clear inputs
       router.refresh();
-      router.push(`/admin/tenants/${data.id}`);
       setOpen(false);
       setName("");
       setActivatedUntil("");

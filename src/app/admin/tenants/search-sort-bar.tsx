@@ -27,6 +27,7 @@ export default function SearchSortBar({
   // Local UI state
   const [q, setQ] = useState(qInitial);
   const [sort, setSort] = useState(sortInitial);
+  const [status, setStatus] = useState(sp.get("status") ?? ""); // NEW
 
   // Keep a debounce timer
   const timerRef = useRef<number | null>(null);
@@ -35,19 +36,25 @@ export default function SearchSortBar({
   const pushQuery = useCallback(
     (nextQ: string, nextSort: string, replace = true) => {
       const params = new URLSearchParams(sp?.toString() || "");
+      // q
       if (nextQ) params.set("q", nextQ);
       else params.delete("q");
+      // sort
       if (nextSort) params.set("sort", nextSort);
+      // NEW: status
+      if (status) params.set("status", status);
+      else params.delete("status");
+
       const url = `${pathname}?${params.toString()}`;
       replace ? router.replace(url) : router.push(url);
     },
-    [pathname, router, sp]
+    [pathname, router, sp, status] // include status so it’s current
   );
 
   // Debounce: when q changes via typing, update URL after delay
   useEffect(() => {
     // Skip initial mount if value equals initial (avoid duplicate replace)
-    if (q === qInitial && sort === sortInitial) return;
+    if (q === qInitial && sort === sortInitial && (sp.get("status") ?? "") === status) return;
 
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
@@ -67,6 +74,12 @@ export default function SearchSortBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort]);
 
+  // NEW: Status changes trigger immediate update (same behavior as sort)
+  useEffect(() => {
+    pushQuery(q, sort, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   // Submit (Enter) forces immediate push (no debounce)
   const onSubmit = useCallback(
     (e: FormEvent) => {
@@ -77,7 +90,7 @@ export default function SearchSortBar({
     [pushQuery, q, sort]
   );
 
-  // Clear only resets q (keeps sort)
+  // Clear only resets q (keeps sort and status as chosen)
   const onClear = useCallback(() => {
     setQ("");
     if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -125,6 +138,20 @@ export default function SearchSortBar({
             {opt.label}
           </option>
         ))}
+      </select>
+
+      {/* NEW: Status select */}
+      <select
+        name="status"
+        value={status}
+        onChange={(e) => setStatus(e.target.value)}
+        className="h-9 rounded-md border px-2 text-sm"
+        aria-label="Filter by status"
+        title="Status"
+      >
+        <option value="">All statuses</option>
+        <option value="ACTIVE">Active</option>
+        <option value="SUSPENDED">Suspended</option>
       </select>
 
       {/* Explicit Apply (Enter) — optional but nice to have */}

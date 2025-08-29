@@ -53,7 +53,7 @@ const sortOptions: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "name_desc", label: "Name Z → A" },
 ] as const;
 
-/* -------------------- PAGINATION (ADDED) -------------------- */
+/* -------------------- PAGINATION -------------------- */
 const PAGE_SIZE = 20;
 
 function getPage(sp?: Record<string, string | string[] | undefined>) {
@@ -67,16 +67,19 @@ function PaginationFooter({
   totalPages,
   q,
   sort,
+  status,
 }: {
   page: number;
   totalPages: number;
   q: string;
   sort: SortKey;
+  status: string; // "" | "ACTIVE" | "SUSPENDED"
 }) {
   const makeHref = (p: number) => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (sort) params.set("sort", sort);
+    if (status) params.set("status", status);
     if (p > 1) params.set("page", String(p));
     const qs = params.toString();
     return qs ? `?${qs}` : "?";
@@ -114,64 +117,69 @@ function PaginationFooter({
     </div>
   );
 }
-/* ------------------ END PAGINATION (ADDED) ------------------ */
+/* ------------------ END PAGINATION ------------------ */
 
 export default async function TenantsAdminPage({
   searchParams,
 }: {
-  // Next.js supplies string | string[] | undefined; we read only the ones we care about
-  searchParams?: Record<string, string | string[] | undefined>;
+  // In this Next.js version, searchParams is async.
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const q = (typeof searchParams?.q === "string" ? searchParams?.q : "").trim();
+  // ✅ Await once, then use `sp` everywhere.
+  const sp = (await searchParams) ?? {};
+
+  const q = (typeof sp.q === "string" ? sp.q : "").trim();
+
   const sort =
-    (typeof searchParams?.sort === "string" &&
-    sortOptions.some((o) => o.value === (searchParams!.sort as SortKey))
-      ? (searchParams!.sort as SortKey)
+    (typeof sp.sort === "string" &&
+    sortOptions.some((o) => o.value === (sp.sort as SortKey))
+      ? (sp.sort as SortKey)
       : "created_desc");
 
-  // Build a typed where object (keeps your current behavior)
-  const where: Prisma.TenantWhereInput | undefined = q
-    ? {
-        OR: [
-          { name: { contains: q } },
-          // If your id is a string (e.g., cuid) this is valid; if you prefer strict match, change to { id: { equals: q } }
-          { id: { contains: q } },
-        ],
-      }
-    : undefined;
+  // Status (accepts any case)
+  const rawStatus = typeof sp.status === "string" ? sp.status : "";
+  const status = rawStatus.trim().toUpperCase(); // "" | "ACTIVE" | "SUSPENDED"
 
-  /* -------------------- PAGINATION (ADDED) -------------------- */
-  const page = getPage(searchParams);
+  // Build Prisma where
+  const where: Prisma.TenantWhereInput = {};
+  if (q) {
+    where.OR = [
+      { name: { contains: q } },
+      { id: { contains: q } },
+    ];
+  }
+  if (status === "ACTIVE" || status === "SUSPENDED") {
+    where.status = status as any;
+  }
+
+  // Pagination
+  const page = getPage(sp);
   const skip = (page - 1) * PAGE_SIZE;
   const take = PAGE_SIZE;
   const totalCount = await prisma.tenant.count({ where });
-  /* ------------------ END PAGINATION (ADDED) ------------------ */
 
   const tenants = await prisma.tenant.findMany({
     where,
     orderBy: getOrder(sort),
-    /* PAGINATION (ADDED) */
     skip,
     take,
   });
 
-  // Build export href preserving current q/sort
+  // Export href (preserve q/sort/status)
   const exportHref = (() => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (sort) params.set("sort", sort);
+    if (status) params.set("status", status);
     return `/admin/tenants/export?${params.toString()}`;
   })();
 
-  // UI-friendly options for the client component (string values)
   const sortOptionsForUI = sortOptions.map((o) => ({
     value: o.value,
     label: o.label,
   }));
 
-  /* -------------------- PAGINATION (ADDED) -------------------- */
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  /* ------------------ END PAGINATION (ADDED) ------------------ */
 
   return (
     <div className="mx-auto max-w-6xl p-4">
@@ -185,7 +193,6 @@ export default async function TenantsAdminPage({
             sortOptions={sortOptionsForUI}
           />
 
-          {/* Admin Console button */}
           <Link
             href="/admin"
             className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
@@ -275,9 +282,13 @@ export default async function TenantsAdminPage({
         </table>
       </div>
 
-      {/* -------------------- PAGINATION (ADDED) -------------------- */}
-      <PaginationFooter page={page} totalPages={totalPages} q={q} sort={sort} />
-      {/* ------------------ END PAGINATION (ADDED) ------------------ */}
+      <PaginationFooter
+        page={page}
+        totalPages={totalPages}
+        q={q}
+        sort={sort}
+        status={status}
+      />
     </div>
   );
 }
