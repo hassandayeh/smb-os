@@ -28,17 +28,17 @@ export default function RootLayout({
               </Link>
             </div>
 
-            {/* Navigation placeholders (we’ll wire up entitlements later) */}
+            {/* Global nav: Dashboard + Admin only */}
             <nav className="hidden md:flex items-center gap-6 text-sm">
               <Link href="/" className="hover:underline underline-offset-4">
                 Dashboard
               </Link>
-              <span className="text-muted-foreground">Inventory</span>
-              <span className="text-muted-foreground">Invoices</span>
-              <span className="text-muted-foreground">Admin</span>
+              <Link href="/admin" className="hover:underline underline-offset-4">
+                Admin
+              </Link>
             </nav>
 
-            {/* Right-side actions placeholder */}
+            {/* Right-side actions */}
             <div className="flex items-center gap-3">
               <span className="text-sm text-muted-foreground">Signed in as: demo</span>
             </div>
