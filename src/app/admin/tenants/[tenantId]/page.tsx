@@ -134,9 +134,15 @@ export default async function ManageTenantPage({
   if (q) qs.set("q", q);
   if (sort) qs.set("sort", sort);
   const qsStr = qs.toString();
+
   const viewEntitlementsHref = qsStr
     ? `/admin/tenants/${tenant.id}/entitlements?${qsStr}`
     : `/admin/tenants/${tenant.id}/entitlements`;
+
+  // NEW: Tenant Settings button preserves q/sort as well
+  const tenantSettingsHref = qsStr
+    ? `/admin/tenants/${tenant.id}/settings?${qsStr}`
+    : `/admin/tenants/${tenant.id}/settings`;
 
   return (
     <div className="p-6 space-y-6">
@@ -162,6 +168,13 @@ export default async function ManageTenantPage({
             className="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
           >
             View Entitlements
+          </Link>
+          {/* NEW: Tenant Settings */}
+          <Link
+            href={tenantSettingsHref}
+            className="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
+          >
+            Tenant Settings
           </Link>
         </div>
       </div>
