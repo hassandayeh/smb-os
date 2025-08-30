@@ -27,7 +27,8 @@ export default function SearchSortBar({
   // Local UI state
   const [q, setQ] = useState(qInitial);
   const [sort, setSort] = useState(sortInitial);
-  const [status, setStatus] = useState(sp.get("status") ?? ""); // NEW
+  const [status, setStatus] = useState(sp.get("status") ?? ""); // existing
+  const [type, setType] = useState(sp.get("type") ?? "all");    // NEW
 
   // Keep a debounce timer
   const timerRef = useRef<number | null>(null);
@@ -41,20 +42,33 @@ export default function SearchSortBar({
       else params.delete("q");
       // sort
       if (nextSort) params.set("sort", nextSort);
-      // NEW: status
+      // status (existing)
       if (status) params.set("status", status);
       else params.delete("status");
+      // type (NEW)
+      const normType = (type || "all").toLowerCase();
+      if (normType !== "all") params.set("type", normType);
+      else params.delete("type");
+
+      // reset page on any filter change
+      params.delete("page");
 
       const url = `${pathname}?${params.toString()}`;
       replace ? router.replace(url) : router.push(url);
     },
-    [pathname, router, sp, status] // include status so it’s current
+    [pathname, router, sp, status, type]
   );
 
   // Debounce: when q changes via typing, update URL after delay
   useEffect(() => {
-    // Skip initial mount if value equals initial (avoid duplicate replace)
-    if (q === qInitial && sort === sortInitial && (sp.get("status") ?? "") === status) return;
+    // Skip initial mount if values equal initial (avoid duplicate replace)
+    if (
+      q === qInitial &&
+      sort === sortInitial &&
+      (sp.get("status") ?? "") === status &&
+      (sp.get("type") ?? "all") === type
+    )
+      return;
 
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
@@ -74,11 +88,17 @@ export default function SearchSortBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort]);
 
-  // NEW: Status changes trigger immediate update (same behavior as sort)
+  // Status changes trigger immediate update (same behavior as sort)
   useEffect(() => {
     pushQuery(q, sort, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
+
+  // NEW: Type changes trigger immediate update (same behavior as sort)
+  useEffect(() => {
+    pushQuery(q, sort, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type]);
 
   // Submit (Enter) forces immediate push (no debounce)
   const onSubmit = useCallback(
@@ -90,7 +110,7 @@ export default function SearchSortBar({
     [pushQuery, q, sort]
   );
 
-  // Clear only resets q (keeps sort and status as chosen)
+  // Clear only resets q (keeps sort/status/type as chosen)
   const onClear = useCallback(() => {
     setQ("");
     if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -140,7 +160,7 @@ export default function SearchSortBar({
         ))}
       </select>
 
-      {/* NEW: Status select */}
+      {/* Status select (existing) */}
       <select
         name="status"
         value={status}
@@ -154,7 +174,22 @@ export default function SearchSortBar({
         <option value="SUSPENDED">Suspended</option>
       </select>
 
-      {/* Explicit Apply (Enter) — optional but nice to have */}
+      {/* NEW: Type select (Parent/Child/Standalone/All) */}
+      <select
+        name="type"
+        value={type}
+        onChange={(e) => setType(e.target.value)}
+        className="h-9 rounded-md border px-2 text-sm"
+        aria-label="Filter by type"
+        title="Type"
+      >
+        <option value="all">All types</option>
+        <option value="parent">Parents</option>
+        <option value="child">Children</option>
+        <option value="standalone">Standalone</option>
+      </select>
+
+      {/* Single Apply button (unchanged) */}
       <button
         type="submit"
         className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"

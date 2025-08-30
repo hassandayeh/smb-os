@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 import SearchSortBar from "./search-sort-bar"; // client component
+import type { ReactNode } from "react";
 
 function fmtDate(d: Date | null) {
   if (!d) return "—";
@@ -16,6 +17,15 @@ function fmtDate(d: Date | null) {
   } catch {
     return d.toISOString().slice(0, 10);
   }
+}
+
+/** Small neutral pill for inline badges (keeps row height unchanged). */
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <span className="mr-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
+      {children}
+    </span>
+  );
 }
 
 type SortKey =
@@ -68,18 +78,21 @@ function PaginationFooter({
   q,
   sort,
   status,
+  type,
 }: {
   page: number;
   totalPages: number;
   q: string;
   sort: SortKey;
   status: string; // "" | "ACTIVE" | "SUSPENDED"
+  type: TypeFilter;
 }) {
   const makeHref = (p: number) => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (sort) params.set("sort", sort);
     if (status) params.set("status", status);
+    if (type && type !== "all") params.set("type", type);
     if (p > 1) params.set("page", String(p));
     const qs = params.toString();
     return qs ? `?${qs}` : "?";
@@ -119,6 +132,14 @@ function PaginationFooter({
 }
 /* ------------------ END PAGINATION ------------------ */
 
+/* -------------------- TYPE FILTER ------------------- */
+type TypeFilter = "all" | "parent" | "child" | "standalone";
+
+function isTypeFilter(v: string | undefined): v is TypeFilter {
+  return v === "all" || v === "parent" || v === "child" || v === "standalone";
+}
+/* ------------------ END TYPE FILTER ------------------ */
+
 export default async function TenantsAdminPage({
   searchParams,
 }: {
@@ -140,16 +161,25 @@ export default async function TenantsAdminPage({
   const rawStatus = typeof sp.status === "string" ? sp.status : "";
   const status = rawStatus.trim().toUpperCase(); // "" | "ACTIVE" | "SUSPENDED"
 
+  // Type (from query)
+  const rawType = typeof sp.type === "string" ? sp.type : "all";
+  const type: TypeFilter = isTypeFilter(rawType) ? rawType : "all";
+
   // Build Prisma where
   const where: Prisma.TenantWhereInput = {};
   if (q) {
-    where.OR = [
-      { name: { contains: q } },
-      { id: { contains: q } },
-    ];
+    where.OR = [{ name: { contains: q } }, { id: { contains: q } }];
   }
   if (status === "ACTIVE" || status === "SUSPENDED") {
     where.status = status as any;
+  }
+  // Apply type filter server-side
+  if (type === "parent") {
+    where.children = { some: {} };
+  } else if (type === "child") {
+    where.parentTenantId = { not: null };
+  } else if (type === "standalone") {
+    where.AND = [{ parentTenantId: null }, { children: { none: {} } }];
   }
 
   // Pagination
@@ -163,14 +193,26 @@ export default async function TenantsAdminPage({
     orderBy: getOrder(sort),
     skip,
     take,
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      activatedUntil: true,
+      createdAt: true,
+      defaultLocale: true,
+      deletedAt: true,
+      parentTenantId: true,
+      _count: { select: { children: true } },
+    },
   });
 
-  // Export href (preserve q/sort/status)
+  // Export href (preserve q/sort/status/type)
   const exportHref = (() => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (sort) params.set("sort", sort);
     if (status) params.set("status", status);
+    if (type && type !== "all") params.set("type", type);
     return `/admin/tenants/export?${params.toString()}`;
   })();
 
@@ -191,6 +233,8 @@ export default async function TenantsAdminPage({
             qInitial={q}
             sortInitial={sort}
             sortOptions={sortOptionsForUI}
+            /* NEW: pass current status and type so the single Apply controls everything */
+
           />
 
           <Link
@@ -254,7 +298,15 @@ export default async function TenantsAdminPage({
             ) : (
               tenants.map((t) => (
                 <tr key={t.id} className="border-t">
-                  <td className="px-3 py-2 font-medium">{t.name}</td>
+                  <td className="px-3 py-2 font-medium">
+                    {/* Pills unchanged; left of the name */}
+                    {t.parentTenantId ? (
+                      <Chip>Child</Chip>
+                    ) : t._count.children > 0 ? (
+                      <Chip>Parent • {t._count.children}</Chip>
+                    ) : null}
+                    {t.name}
+                  </td>
                   <td className="px-3 py-2 text-muted-foreground">{t.id}</td>
                   <td className="px-3 py-2">{t.status}</td>
                   <td className="px-3 py-2">{fmtDate(t.activatedUntil)}</td>
@@ -288,6 +340,7 @@ export default async function TenantsAdminPage({
         q={q}
         sort={sort}
         status={status}
+        type={type}
       />
     </div>
   );
