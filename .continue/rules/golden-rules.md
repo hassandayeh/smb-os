@@ -1,0 +1,6 @@
+- Always propose diffs, never rewrite whole files.
+- For multi-file edits: plan first, then one file at a time.
+- If unsure about file names or structure: ask before coding.
+- When touching >1 file, list dependencies first.
+- Avoid duplicating files and codes. If a code already exists you should either use it or update it if needed.
+- I'm not a coder. I only provide logic and human test. Work with me in a simple way (for dummies)
