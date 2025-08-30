@@ -1,5 +1,7 @@
+// src/app/admin/entitlements/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import DebouncedSearch from "./debounced-search";
 
 export const dynamic = "force-dynamic";
 
@@ -35,33 +37,8 @@ export default async function ModulesIndex({
         </Link>
       </div>
 
-      {/* Search */}
-      <form className="mb-4 flex items-end gap-2" method="get">
-        <div className="flex flex-col">
-          <label className="mb-1 text-xs text-muted-foreground">Search</label>
-          <input
-            name="q"
-            defaultValue={q}
-            placeholder="Name or key"
-            className="h-9 w-[260px] rounded-md border px-3"
-            inputMode="text"
-          />
-        </div>
-        <button
-          type="submit"
-          className="h-9 rounded-md border px-3 text-sm hover:bg-muted/40"
-        >
-          Apply
-        </button>
-        {q ? (
-          <Link
-            href="/admin/entitlements"
-            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted/40"
-          >
-            Clear
-          </Link>
-        ) : null}
-      </form>
+      {/* Search (debounced, preserves focus; same look & classes) */}
+      <DebouncedSearch delay={500} />
 
       {/* Modules grid */}
       {modules.length === 0 ? (

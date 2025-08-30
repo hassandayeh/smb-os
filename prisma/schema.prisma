@@ -36,10 +36,20 @@ model Tenant {
   id             String       @id @default(cuid())
   name           String
   status         TenantStatus @default(ACTIVE)
+
   /// Manual activation end date (extend on cash/wire renewal)
   activatedUntil DateTime?
+
   /// Default UI language for this tenant (e.g., "en", "ar")
   defaultLocale  String       @default("en")
+
+  /// Industry/type of this tenant, used for presets (pharmacy|factory|services, etc.)
+  industry       String?
+
+  // --- Hierarchy (parent/child tenants) ---
+  parentTenantId String?
+  parent         Tenant?  @relation("TenantChildren", fields: [parentTenantId], references: [id])
+  children       Tenant[] @relation("TenantChildren")
 
   // Soft delete
   deletedAt DateTime?
@@ -55,6 +65,7 @@ model Tenant {
 
   @@index([status])
   @@index([activatedUntil])
+  @@index([parentTenantId])
   @@map("Tenants")
 }
 
