@@ -139,7 +139,12 @@ export default async function ManageTenantPage({
     ? `/admin/tenants/${tenant.id}/entitlements?${qsStr}`
     : `/admin/tenants/${tenant.id}/entitlements`;
 
-  // NEW: Tenant Settings button preserves q/sort as well
+  // NEW: Users link
+  const tenantUsersHref = qsStr
+    ? `/admin/tenants/${tenant.id}/users?${qsStr}`
+    : `/admin/tenants/${tenant.id}/users`;
+
+  // Tenant Settings preserves q/sort as well
   const tenantSettingsHref = qsStr
     ? `/admin/tenants/${tenant.id}/settings?${qsStr}`
     : `/admin/tenants/${tenant.id}/settings`;
@@ -169,7 +174,14 @@ export default async function ManageTenantPage({
           >
             View Entitlements
           </Link>
-          {/* NEW: Tenant Settings */}
+          {/* NEW: Users */}
+          <Link
+            href={tenantUsersHref}
+            className="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
+          >
+            Users
+          </Link>
+          {/* Tenant Settings */}
           <Link
             href={tenantSettingsHref}
             className="inline-flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
