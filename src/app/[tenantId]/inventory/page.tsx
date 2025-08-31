@@ -1,15 +1,36 @@
 // src/app/[tenantId]/inventory/page.tsx
-import { requireEntitlement } from '@/lib/entitlements';
-import { Card, CardContent } from '@/components/ui/card';
+import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { requireAccess } from "@/lib/access";
+import { Card, CardContent } from "@/components/ui/card";
 
-export const metadata = { title: 'Inventory' };
+export const metadata = { title: "Inventory" };
+export const dynamic = "force-dynamic";
+
+// TEMP for dev only — resolve a user until auth is wired
+async function getDevUserId(): Promise<string | null> {
+  const u = await prisma.user.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return u?.id ?? null;
+}
 
 export default async function InventoryPage({
   params,
 }: {
   params: { tenantId: string };
 }) {
-  await requireEntitlement(params.tenantId, 'inventory');
+  const tenantId = params.tenantId;
+
+  // Enforce Pyramids rule: tenant entitlement + role + per-user toggle
+  try {
+    const userId = await getDevUserId();
+    await requireAccess({ userId, tenantId, moduleKey: "inventory" });
+  } catch (err: any) {
+    const reason = (err as any)?.reason ?? "forbidden";
+    redirect(`/forbidden?reason=${encodeURIComponent(reason)}`);
+  }
 
   return (
     <div className="p-6 space-y-4">

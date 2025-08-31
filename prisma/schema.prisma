@@ -30,21 +30,34 @@ enum UserRole {
   MEMBER
 }
 
+// NEW — Platform-level roles (L1/L2)
+enum PlatformRole {
+  DEVELOPER // L1
+  APP_ADMIN // L2
+}
+
+// NEW — Tenant-scoped roles (L3/L4/L5)
+enum TenantMemberRole {
+  TENANT_ADMIN // L3
+  MANAGER // L4
+  MEMBER // L5
+}
+
 /// ---- Models ----
 
 model Tenant {
-  id             String       @id @default(cuid())
-  name           String
-  status         TenantStatus @default(ACTIVE)
+  id     String       @id @default(cuid())
+  name   String
+  status TenantStatus @default(ACTIVE)
 
   /// Manual activation end date (extend on cash/wire renewal)
   activatedUntil DateTime?
 
   /// Default UI language for this tenant (e.g., "en", "ar")
-  defaultLocale  String       @default("en")
+  defaultLocale String @default("en")
 
   /// Industry/type of this tenant, used for presets (pharmacy|factory|services, etc.)
-  industry       String?
+  industry String?
 
   // --- Hierarchy (parent/child tenants) ---
   parentTenantId String?
@@ -62,6 +75,10 @@ model Tenant {
   users        User[]
   entitlements Entitlement[]
   auditLogs    AuditLog[]
+
+  // NEW — Pyramids
+  memberships      TenantMembership[]
+  userEntitlements UserEntitlement[]
 
   @@index([status])
   @@index([activatedUntil])
@@ -92,6 +109,12 @@ model User {
   // Audit relation (actorUserId)
   auditLogs AuditLog[]
 
+  // NEW — Pyramids back-relations
+  appRoles          AppRole[]
+  memberships       TenantMembership[]
+  supervisedMembers TenantMembership[] @relation("SupervisorRelation")
+  userEntitlements  UserEntitlement[]
+
   // Email is unique within a tenant
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -106,7 +129,9 @@ model Module {
 
   createdAt DateTime @default(now())
 
-  entitlements Entitlement[]
+  entitlements     Entitlement[]
+  // NEW — Pyramids
+  userEntitlements UserEntitlement[]
 
   @@map("Modules")
 }
@@ -156,4 +181,69 @@ model AuditLog {
   @@index([actorUserId])
   @@index([action])
   @@map("AuditLog")
+}
+
+// ======== NEW: Project Pyramids — Phase 0 (revised: surrogate PKs to avoid Studio bug) ========
+
+// Platform-level role grants (L1/L2)
+model AppRole {
+  id     String       @id @default(cuid()) // NEW: surrogate PK
+  userId String
+  role   PlatformRole
+  user   User         @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, role]) // preserves invariant
+  @@index([role])
+  @@map("AppRoles")
+}
+
+// Per-tenant membership & hierarchy (L3/L4/L5)
+model TenantMembership {
+  id       String           @id @default(cuid()) // NEW: surrogate PK
+  userId   String
+  tenantId String
+  role     TenantMemberRole
+  isActive Boolean          @default(true)
+
+  /// Optional supervisor for L5 (and sometimes L4). Points to another User.
+  supervisorId String?
+  supervisor   User?   @relation("SupervisorRelation", fields: [supervisorId], references: [id])
+
+  /// Modules this member can grant to their subordinates (L4 delegating to L5)
+  grantableModules Json?
+
+  user   User   @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, tenantId]) // one membership per tenant
+  @@index([tenantId, role])
+  @@index([supervisorId])
+  @@map("TenantMemberships")
+}
+
+// Per-user module switches (applies only if tenant-level entitlement is ON)
+model UserEntitlement {
+  id        String @id @default(cuid()) // NEW: surrogate PK
+  userId    String
+  tenantId  String
+  moduleKey String
+
+  user   User   @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  module Module @relation(fields: [moduleKey], references: [key])
+
+  isEnabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, tenantId, moduleKey]) // stronger uniqueness for future multi-tenant users
+  @@index([tenantId])
+  @@index([moduleKey])
+  @@map("UserEntitlements")
 }
