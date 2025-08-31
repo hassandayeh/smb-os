@@ -26,6 +26,7 @@ export type AccessDecision = {
     | "TENANT_ADMIN"
     | "USER_ENTITLEMENT_ON"
     | "USER_ENTITLEMENT_OFF"
+    | "NO_USER_RULE"
     | "NO_MEMBERSHIP";
 };
 
@@ -85,6 +86,11 @@ export async function hasModuleAccess(params: {
 
   if (ue?.isEnabled) {
     return { allowed: true, reason: "USER_ENTITLEMENT_ON" };
+  }
+
+  // Distinguish between missing user rule and explicit OFF
+  if (ue == null) {
+    return { allowed: false, reason: "NO_USER_RULE" };
   }
 
   return { allowed: false, reason: "USER_ENTITLEMENT_OFF" };
