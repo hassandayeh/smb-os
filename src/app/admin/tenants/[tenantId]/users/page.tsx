@@ -1,6 +1,8 @@
 // src/app/admin/tenants/[tenantId]/users/page.tsx
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
+import { Card, CardContent } from "@/components/ui/card";
+import SubmitButton from "@/components/SubmitButton";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +29,6 @@ export default async function TenantUsersPage({
   const { tenantId } = params;
 
   // ---- Known modules (keep in sync with your module config) ----
-  // For now, we list the two tenant-space modules you already have wired.
   const MODULE_KEYS = ["inventory", "invoices"] as const;
 
   // Load tenant (for header context) + users
@@ -124,10 +125,60 @@ export default async function TenantUsersPage({
         </div>
       </div>
 
-      <div className="text-sm text-muted-foreground">
-        Tenant:{" "}
-        <span className="font-medium">{tenant?.name ?? tenantId}</span>
-      </div>
+      {/* Create User (inline form) */}
+      <Card className="rounded-2xl">
+        <CardContent className="p-4">
+          <form
+            action={`/api/admin/tenants/${tenantId}/users`}
+            method="POST"
+            className="grid grid-cols-1 md:grid-cols-[1fr_1fr_180px_auto] gap-3 items-end"
+          >
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                Name (optional)
+              </label>
+              <input
+                name="name"
+                type="text"
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                placeholder="Jane Doe"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                Email (required)
+              </label>
+              <input
+                name="email"
+                type="email"
+                required
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                placeholder="jane@example.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                Role
+              </label>
+              <select
+                name="role"
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                defaultValue="MEMBER"
+              >
+                <option value="TENANT_ADMIN">Tenant Admin</option>
+                <option value="MANAGER">Manager</option>
+                <option value="MEMBER">Member</option>
+              </select>
+            </div>
+
+            <input type="hidden" name="redirectTo" value={currentUrl} />
+
+            <SubmitButton className="h-10 px-4 rounded-md border text-sm">
+              Create user
+            </SubmitButton>
+          </form>
+        </CardContent>
+      </Card>
 
       {/* Users Table */}
       <div className="overflow-x-auto rounded-lg border">
@@ -138,7 +189,6 @@ export default async function TenantUsersPage({
               <th className="px-3 py-2">Email</th>
               <th className="px-3 py-2">Role</th>
               <th className="px-3 py-2">Created</th>
-              {/* New column for per-user module toggles */}
               <th className="px-3 py-2">
                 <div className="flex gap-2 items-center">
                   Access
@@ -163,6 +213,10 @@ export default async function TenantUsersPage({
             ) : (
               users.map((u) => {
                 const row = entMap.get(u.id)!;
+                const onCount = (Object.keys(row) as (typeof MODULE_KEYS)[number][])
+                  .reduce((n, mk) => n + (row[mk] === true ? 1 : 0), 0);
+                const total = MODULE_KEYS.length;
+
                 return (
                   <tr key={u.id} className="border-t">
                     <td className="px-3 py-2 font-medium">
@@ -172,61 +226,17 @@ export default async function TenantUsersPage({
                     <td className="px-3 py-2">{String(u.role ?? "—")}</td>
                     <td className="px-3 py-2">{fmtDate(u.createdAt)}</td>
 
-                    {/* Per-user toggles cell */}
+                    {/* Compact access cell */}
                     <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-2">
-                        {MODULE_KEYS.map((mk) => {
-                          const current = row?.[mk]; // true | false | undefined (undefined = NO_USER_RULE)
-                          const label =
-                            mk.charAt(0).toUpperCase() + mk.slice(1);
-                          const isOn = current === true;
-                          // We send the next intended state in the form:
-                          const nextState = !isOn;
-
-                          return (
-                            <form
-                              key={mk}
-                              action={`/api/admin/tenants/${tenantId}/users/${u.id}/entitlements`}
-                              method="POST"
-                              className="inline-flex"
-                            >
-                              <input type="hidden" name="moduleKey" value={mk} />
-                              <input
-                                type="hidden"
-                                name="isEnabled"
-                                value={String(nextState)}
-                              />
-                              <input
-                                type="hidden"
-                                name="redirectTo"
-                                value={currentUrl}
-                              />
-                              <button
-                                type="submit"
-                                className={[
-                                  "inline-flex h-7 items-center rounded-md border px-2 text-xs",
-                                  isOn
-                                    ? "bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
-                                    : "hover:bg-muted",
-                                ].join(" ")}
-                                title={
-                                  isOn
-                                    ? `Disable ${label} for this user`
-                                    : `Enable ${label} for this user`
-                                }
-                              >
-                                {label}: {current === undefined ? "—" : isOn ? "ON" : "OFF"}
-                              </button>
-                            </form>
-                          );
-                        })}
-                      </div>
+                      <span className="inline-flex items-center rounded-md border px-2 py-1 text-xs">
+                        {onCount} / {total}
+                      </span>
                     </td>
 
                     {/* Actions */}
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
-                        {/* Preview as: posts to API, sets cookie, redirects back */}
+                        {/* Preview as */}
                         <form action="/api/dev/preview-user" method="POST">
                           <input type="hidden" name="userId" value={u.id} />
                           <input
@@ -243,15 +253,14 @@ export default async function TenantUsersPage({
                           </button>
                         </form>
 
-                        {/* Placeholder for future edit */}
-                        <button
-                          type="button"
-                          className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted cursor-not-allowed opacity-50"
-                          title="Edit (coming soon)"
-                          disabled
+                        {/* Manage page */}
+                        <Link
+                          href={`/admin/tenants/${tenantId}/users/${u.id}`}
+                          className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted"
+                          title="Open user management"
                         >
-                          Edit
-                        </button>
+                          Manage
+                        </Link>
                       </div>
                     </td>
                   </tr>
