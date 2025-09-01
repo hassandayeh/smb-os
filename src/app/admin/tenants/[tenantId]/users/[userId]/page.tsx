@@ -23,6 +23,13 @@ function fmtDate(d: Date | null | undefined) {
   }
 }
 
+// helper: append query params to a relative URL
+function addQuery(u: string, extra: Record<string, string>) {
+  const tail = new URLSearchParams(extra).toString();
+  if (!tail) return u;
+  return u.includes("?") ? `${u}&${tail}` : `${u}?${tail}`;
+}
+
 export default async function ManageTenantUserPage({
   params,
   searchParams,
@@ -53,6 +60,15 @@ export default async function ManageTenantUserPage({
   const currentUrl = qsStr
     ? `/admin/tenants/${tenantId}/users/${userId}?${qsStr}`
     : `/admin/tenants/${tenantId}/users/${userId}`;
+
+  // Base (without toast/error) to allow dismiss
+  const baseSelfUrl = qsStr
+    ? `/admin/tenants/${tenantId}/users/${userId}?${qsStr}`
+    : `/admin/tenants/${tenantId}/users/${userId}`;
+
+  // Toast / error flags
+  const toastKey = typeof sp.toast === "string" ? sp.toast : "";
+  const errorMsg = typeof sp.error === "string" ? sp.error : "";
 
   // Load tenant + user + membership + entitlements
   const [tenant, user, membership, entRows] = await Promise.all([
@@ -87,8 +103,46 @@ export default async function ManageTenantUserPage({
 
   const isActive = membership?.isActive ?? true;
 
+  // Map toast keys to human text
+  const toastText =
+    errorMsg ||
+    (toastKey === "name_saved"
+      ? "Display name saved"
+      : toastKey === "role_saved"
+      ? "Role updated"
+      : toastKey === "user_activated"
+      ? "User activated"
+      : toastKey === "user_deactivated"
+      ? "User deactivated"
+      : toastKey === "entitlement_saved"
+      ? "Entitlement updated"
+      : "");
+
   return (
     <div className="p-6 space-y-6">
+      {/* Fixed toast (success/error) */}
+      {toastText ? (
+        <div
+          className={[
+            "fixed bottom-4 right-4 z-50 rounded-lg px-4 py-3 shadow-lg border text-sm",
+            errorMsg
+              ? "bg-rose-600 border-rose-700 text-white"
+              : "bg-emerald-600 border-emerald-700 text-white",
+          ].join(" ")}
+        >
+          <div className="flex items-center gap-3">
+            <span>{toastText}</span>
+            <Link
+              href={baseSelfUrl}
+              className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/30 hover:bg-white/10"
+              title="Dismiss"
+            >
+              ×
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
       {/* Header / breadcrumbs */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
@@ -165,11 +219,39 @@ export default async function ManageTenantUserPage({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Display name — inline edit (simple form submit) */}
+            <form
+              action={`/api/admin/tenants/${tenantId}/users/${userId}`}
+              method="POST"
+              className="space-y-1"
+            >
+              <label className="block text-xs text-muted-foreground" htmlFor="displayName">
+                Display name
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="displayName"
+                  name="name"
+                  defaultValue={user?.name ?? ""}
+                  placeholder="Enter display name"
+                  className="flex-1 rounded-md border px-3 h-9 text-sm"
+                />
+                <input
+                  type="hidden"
+                  name="redirectTo"
+                  value={addQuery(currentUrl, { toast: "name_saved" })}
+                />
+                <SubmitButton className="h-9 px-3 rounded-md border text-sm">
+                  Save
+                </SubmitButton>
+              </div>
+            </form>
+
             {/* Role — autosubmit on change */}
             <RoleSelect
               action={`/api/admin/tenants/${tenantId}/users/${userId}`}
               defaultValue={String(membership?.role ?? "MEMBER") as any}
-              redirectTo={currentUrl}
+              redirectTo={addQuery(currentUrl, { toast: "role_saved" })}
             />
 
             {/* Activate / Deactivate (only the button) */}
@@ -179,7 +261,14 @@ export default async function ManageTenantUserPage({
               className="flex items-end gap-3"
             >
               <input type="hidden" name="isActive" value={String(!isActive)} />
-              <input type="hidden" name="redirectTo" value={currentUrl} />
+              <input
+                type="hidden"
+                name="redirectTo"
+                value={addQuery(
+                  currentUrl,
+                  { toast: isActive ? "user_deactivated" : "user_activated" }
+                )}
+              />
               <SubmitButton className="h-9 px-4 rounded-md border text-sm">
                 {isActive ? "Deactivate" : "Activate"}
               </SubmitButton>
@@ -235,7 +324,11 @@ export default async function ManageTenantUserPage({
                 >
                   <input type="hidden" name="moduleKey" value={mk} />
                   <input type="hidden" name="isEnabled" value={String(next)} />
-                  <input type="hidden" name="redirectTo" value={currentUrl} />
+                  <input
+                    type="hidden"
+                    name="redirectTo"
+                    value={addQuery(currentUrl, { toast: "entitlement_saved" })}
+                  />
                   <button
                     className={[
                       "inline-flex h-8 items-center rounded-md border px-3 text-xs",
