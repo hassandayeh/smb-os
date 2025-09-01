@@ -236,3 +236,30 @@ export function assertCanCreateRole(params: {
     throw error;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/*                  NEW: Platform Admin (non-tenant) guard                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * For ADMIN area pages/layouts (non-tenant context).
+ * Allows only platform staff (L1/L2). Throws 403 otherwise.
+ * Keeps all logic centralized here per Keystone rules.
+ */
+export async function requireAdminAccess(userId?: string | null) {
+  if (!userId) {
+    const err = new Error("Forbidden (AUTH)");
+    // @ts-expect-error status tag used by route/page error mappers
+    err.status = 403;
+    throw err;
+  }
+
+  // Reuse central level resolution; tenantId is irrelevant for platform roles.
+  const level = await getActorLevel(userId, "platform");
+  if (level === "L1" || level === "L2") return true;
+
+  const err = new Error("Forbidden (ADMIN_ONLY)");
+  // @ts-expect-error status tag used by route/page error mappers
+  err.status = 403;
+  throw err;
+}

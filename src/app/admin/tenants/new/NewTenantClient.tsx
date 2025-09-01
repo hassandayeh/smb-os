@@ -1,15 +1,16 @@
-'use client';
+// src/app/admin/tenants/new/NewTenantClient.tsx
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
-export default function NewTenantPage() {
+export default function NewTenantClient() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [activatedUntil, setActivatedUntil] = useState<string>('');
-  const [defaultLocale, setDefaultLocale] = useState<'en' | 'ar' | 'de'>('en');
+  const [name, setName] = useState("");
+  const [activatedUntil, setActivatedUntil] = useState<string>("");
+  const [defaultLocale, setDefaultLocale] = useState<"en" | "ar" | "de">("en");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,15 +19,15 @@ export default function NewTenantPage() {
     setError(null);
 
     if (!name.trim()) {
-      setError('Name is required.');
+      setError("Name is required.");
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/admin/tenants', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch("/api/admin/tenants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
           activatedUntil: activatedUntil || null, // yyyy-mm-dd or null
@@ -36,12 +37,12 @@ export default function NewTenantPage() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error || 'Failed to create tenant');
+        throw new Error(data?.error || "Failed to create tenant");
       }
 
-      router.push('/admin/tenants');
+      router.push("/admin/tenants");
     } catch (err: any) {
-      setError(err.message || 'Something went wrong');
+      setError(err.message || "Something went wrong");
     } finally {
       setSubmitting(false);
     }
@@ -95,7 +96,7 @@ export default function NewTenantPage() {
               id="defaultLocale"
               className="rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-ring"
               value={defaultLocale}
-              onChange={(e) => setDefaultLocale(e.target.value as 'en' | 'ar' | 'de')}
+              onChange={(e) => setDefaultLocale(e.target.value as "en" | "ar" | "de")}
             >
               <option value="en">English (en)</option>
               <option value="ar">العربية (ar)</option>
@@ -111,7 +112,7 @@ export default function NewTenantPage() {
 
           <div className="flex gap-3">
             <Button type="submit" disabled={submitting}>
-              {submitting ? 'Creating…' : 'Create Tenant'}
+              {submitting ? "Creating…" : "Create Tenant"}
             </Button>
             <Button type="button" variant="outline" asChild>
               <Link href="/admin/tenants">Cancel</Link>

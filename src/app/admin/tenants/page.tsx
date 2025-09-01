@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 import SearchSortBar from "./search-sort-bar"; // client component
 import type { ReactNode } from "react";
+import { requireAccess } from "@/lib/guard-page"; // ✅ Keystone admin guard
 
 function fmtDate(d: Date | null) {
   if (!d) return "—";
@@ -146,6 +147,9 @@ export default async function TenantsAdminPage({
   // In this Next.js version, searchParams is async.
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  // ✅ Keystone compliance: guard at the very top (admin area)
+  await requireAccess();
+
   // ✅ Await once, then use `sp` everywhere.
   const sp = (await searchParams) ?? {};
 
@@ -234,12 +238,11 @@ export default async function TenantsAdminPage({
             sortInitial={sort}
             sortOptions={sortOptionsForUI}
             /* NEW: pass current status and type so the single Apply controls everything */
-
           />
 
           <Link
             href="/admin"
-            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bgMuted hover:bg-muted"
           >
             Admin Console
           </Link>
