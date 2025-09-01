@@ -33,20 +33,23 @@ export async function POST(req: Request) {
   return res;
 }
 
-// DELETE: clear preview user cookie
+// DELETE: clear preview user cookie (fallback to referer)
 export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
-  const redirectTo = searchParams.get("redirectTo") || "/admin";
+  const referer = req.headers.get("referer") || undefined;
+  const redirectTo = searchParams.get("redirectTo") || referer || "/admin";
+
   const res = NextResponse.redirect(new URL(redirectTo, req.url), { status: 303 });
   res.cookies.set(COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
   return res;
 }
 
-// NEW — GET: clear via link (?action=clear)
+// GET: clear via link (?action=clear) — with referer fallback
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action");
-  const redirectTo = searchParams.get("redirectTo") || "/admin";
+  const referer = req.headers.get("referer") || undefined;
+  const redirectTo = searchParams.get("redirectTo") || referer || "/admin";
 
   if (action !== "clear") {
     return NextResponse.json(

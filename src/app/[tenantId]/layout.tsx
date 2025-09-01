@@ -4,7 +4,7 @@ import { TenantNav } from "@/components/tenant-nav";
 import { prisma } from "@/lib/prisma";
 import { hasModuleAccess } from "@/lib/access";
 import { getCurrentUserId } from "@/lib/current-user";
-
+import ImpersonationRibbon from "@/components/ImpersonationRibbon"; // NEW
 
 export const dynamic = "force-dynamic"; // keep server-fresh while developing; optional
 
@@ -27,7 +27,6 @@ export default async function TenantLayout({
   // 2) Get current user (server-side helper)
   const userId = await getCurrentUserId();
 
-
   // 3) Per-user filtering: only keep modules this user can actually access
   const checks = await Promise.all(
     tenantEnabledKeys.map((moduleKey) =>
@@ -42,6 +41,7 @@ export default async function TenantLayout({
 
   return (
     <div className="min-h-dvh flex flex-col">
+      <ImpersonationRibbon /> {/* NEW */}
       {/* Tenant-scoped navigation */}
       <TenantNav tenantId={tenantId} entitlements={accessibleKeys} />
 

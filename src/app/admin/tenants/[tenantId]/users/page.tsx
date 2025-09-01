@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import SubmitButton from "@/components/SubmitButton";
+import { getCurrentUserId } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,23 @@ function fmtDate(d: Date | null | undefined) {
       day: "2-digit",
     }).format(d);
   } catch {
-    return d.toISOString().slice(0, 10);
+    return d?.toString() ?? "—";
   }
+}
+
+// Pretty pill for tenant role (L3/L4/L5)
+function TenantRolePill({ role }: { role: "TENANT_ADMIN" | "MANAGER" | "MEMBER" }) {
+  const label =
+    role === "TENANT_ADMIN"
+      ? "Tenant Admin (L3)"
+      : role === "MANAGER"
+      ? "Manager (L4)"
+      : "Member (L5)";
+  return (
+    <span className="inline-flex items-center rounded-md border px-2 py-1 text-xs">
+      {label}
+    </span>
+  );
 }
 
 export default async function TenantUsersPage({
@@ -43,15 +59,20 @@ export default async function TenantUsersPage({
         id: true,
         name: true,
         email: true,
-        role: true,
+        role: true, // kept for future use, not shown now
         createdAt: true,
       },
       orderBy: [{ createdAt: "desc" }],
     }),
   ]);
 
-  // Load existing per-user entitlements for these users (only for our module set)
+  // Build user list helpers
   const userIds = users.map((u) => u.id);
+  const nameMap = new Map<string, string>(
+    users.map((u) => [u.id, u.name || u.email || u.id])
+  );
+
+  // Load existing per-user entitlements for these users (only for our module set)
   const userEnts = userIds.length
     ? await prisma.userEntitlement.findMany({
         where: { tenantId, userId: { in: userIds }, moduleKey: { in: [...MODULE_KEYS] } },
@@ -78,6 +99,47 @@ export default async function TenantUsersPage({
     if (row) row[e.moduleKey as (typeof MODULE_KEYS)[number]] = e.isEnabled;
   }
 
+  // Load tenant memberships (L3/L4/L5) for these users in this tenant — include supervisorId
+  const memberships = userIds.length
+    ? await prisma.tenantMembership.findMany({
+        where: { tenantId, userId: { in: userIds }, isActive: true },
+        select: { userId: true, role: true, supervisorId: true },
+      })
+    : [];
+  const membershipMap = new Map<string, "TENANT_ADMIN" | "MANAGER" | "MEMBER">();
+  const supervisorMap = new Map<string, string | null>();
+  for (const m of memberships) {
+    membershipMap.set(m.userId, m.role as any);
+    supervisorMap.set(m.userId, m.supervisorId ?? null);
+  }
+  // Managers available as supervisors (same tenant)
+  const managerIds = memberships
+    .filter((m) => m.role === "MANAGER")
+    .map((m) => m.userId);
+  const managerOptions = managerIds.map((id) => ({
+    id,
+    name: nameMap.get(id) ?? id,
+  }));
+
+  // ---- Actor flags: platform? L3 here? (for UI rules) ----
+  const actorUserId = await getCurrentUserId();
+  let isPlatform = false;
+  let actorIsL3Here = false;
+  if (actorUserId) {
+    const roles = await prisma.appRole.findMany({
+      where: { userId: actorUserId },
+      select: { role: true },
+    });
+    const rset = new Set(roles.map((r) => r.role));
+    isPlatform = rset.has("DEVELOPER") || rset.has("APP_ADMIN");
+
+    const m = await prisma.tenantMembership.findFirst({
+      where: { tenantId, userId: actorUserId, isActive: true },
+      select: { role: true, isActive: true },
+    });
+    actorIsL3Here = !!m && m.isActive && m.role === "TENANT_ADMIN";
+  }
+
   // Preserve q/sort when navigating back if present
   const sp = searchParams ?? {};
   const q = typeof sp.q === "string" ? sp.q : "";
@@ -96,12 +158,21 @@ export default async function TenantUsersPage({
     ? `/admin/tenants/${tenantId}/users?${qsStr}`
     : `/admin/tenants/${tenantId}/users`;
 
+  // helper: role options allowed for the actor
+  const roleOptionsForActor = (isPlatform: boolean) =>
+    isPlatform
+      ? (["TENANT_ADMIN", "MANAGER", "MEMBER"] as const)
+      : (["MANAGER", "MEMBER"] as const);
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Users</h1>
+          <div className="text-sm text-muted-foreground">
+            Tenant: <span className="font-medium">{tenant?.name ?? tenantId}</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Link
@@ -165,7 +236,7 @@ export default async function TenantUsersPage({
                 className="w-full rounded-md border px-3 py-2 text-sm"
                 defaultValue="MEMBER"
               >
-                <option value="TENANT_ADMIN">Tenant Admin</option>
+                {isPlatform && <option value="TENANT_ADMIN">Tenant Admin</option>}
                 <option value="MANAGER">Manager</option>
                 <option value="MEMBER">Member</option>
               </select>
@@ -187,7 +258,8 @@ export default async function TenantUsersPage({
             <tr>
               <th className="px-3 py-2">Name</th>
               <th className="px-3 py-2">Email</th>
-              <th className="px-3 py-2">Role</th>
+              <th className="px-3 py-2">Tenant role</th>
+              <th className="px-3 py-2">Supervisor</th>
               <th className="px-3 py-2">Created</th>
               <th className="px-3 py-2">
                 <div className="flex gap-2 items-center">
@@ -197,14 +269,14 @@ export default async function TenantUsersPage({
                   </span>
                 </div>
               </th>
-              <th className="px-3 py-2 w-64">Actions</th>
+              <th className="px-3 py-2 w-[30rem]">Actions</th>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className="px-3 py-8 text-center text-muted-foreground"
                 >
                   No users yet.
@@ -217,13 +289,111 @@ export default async function TenantUsersPage({
                   .reduce((n, mk) => n + (row[mk] === true ? 1 : 0), 0);
                 const total = MODULE_KEYS.length;
 
+                const tenantRole = membershipMap.get(u.id) ?? null;
+                const currentSupervisorId = supervisorMap.get(u.id) ?? null;
+                const currentSupervisorName = currentSupervisorId
+                  ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
+                  : null;
+
+                const canEditRole =
+                  isPlatform || (actorIsL3Here && u.id !== actorUserId);
+                const roleOptions = roleOptionsForActor(isPlatform);
+
+                const canEditSupervisor =
+                  (isPlatform || actorIsL3Here) && tenantRole === "MEMBER";
+
+                // Hide "Manage" when the actor is L3 here and this row is themselves
+                const hideManage = actorIsL3Here && u.id === actorUserId;
+
                 return (
                   <tr key={u.id} className="border-t">
-                    <td className="px-3 py-2 font-medium">
-                      {u.name ?? "—"}
-                    </td>
+                    <td className="px-3 py-2 font-medium">{u.name ?? "—"}</td>
                     <td className="px-3 py-2">{u.email ?? "—"}</td>
-                    <td className="px-3 py-2">{String(u.role ?? "—")}</td>
+
+                    {/* Tenant role pill + inline editor (if allowed) */}
+                    <td className="px-3 py-2">
+                      {tenantRole ? (
+                        <TenantRolePill role={tenantRole} />
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+
+                      {canEditRole && (
+                        <form
+                          method="POST"
+                          action={`/api/admin/tenants/${tenantId}/membership?redirectTo=${encodeURIComponent(
+                            currentUrl
+                          )}`}
+                          className="mt-2 flex items-center gap-2"
+                        >
+                          <input type="hidden" name="userId" value={u.id} />
+                          <select
+                            name="role"
+                            defaultValue={tenantRole ?? "MEMBER"}
+                            className="rounded-md border px-2 py-1 text-xs"
+                          >
+                            {roleOptions.map((opt) => (
+                              <option key={opt} value={opt}>
+                                {opt === "TENANT_ADMIN"
+                                  ? "Tenant Admin (L3)"
+                                  : opt === "MANAGER"
+                                  ? "Manager (L4)"
+                                  : "Member (L5)"}
+                              </option>
+                            ))}
+                          </select>
+                          <SubmitButton className="h-7 px-2 rounded-md border text-xs">
+                            Save
+                          </SubmitButton>
+                        </form>
+                      )}
+                    </td>
+
+                    {/* Supervisor column (Members only) */}
+                    <td className="px-3 py-2">
+                      {tenantRole === "MEMBER" ? (
+                        <>
+                          {currentSupervisorId ? (
+                            <span className="inline-flex items-center rounded-md border px-2 py-1 text-xs">
+                              Supervisor: {currentSupervisorName}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">None</span>
+                          )}
+
+                          {canEditSupervisor && (
+                            <form
+                              method="POST"
+                              action={`/api/admin/tenants/supervisor?redirectTo=${encodeURIComponent(
+                                currentUrl
+                              )}`}
+                              className="mt-2 flex items-center gap-2"
+                            >
+                              <input type="hidden" name="tenantId" value={tenantId} /> {/* NEW */}
+                              <input type="hidden" name="userId" value={u.id} />
+                              <select
+                                name="supervisorId"
+                                defaultValue={currentSupervisorId ?? ""}
+                                className="rounded-md border px-2 py-1 text-xs"
+                              >
+                                <option value="">{`(None)`}</option>
+                                {managerOptions.map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <SubmitButton className="h-7 px-2 rounded-md border text-xs">
+                                Save
+                              </SubmitButton>
+                            </form>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+
                     <td className="px-3 py-2">{fmtDate(u.createdAt)}</td>
 
                     {/* Compact access cell */}
@@ -235,15 +405,11 @@ export default async function TenantUsersPage({
 
                     {/* Actions */}
                     <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {/* Preview as */}
                         <form action="/api/dev/preview-user" method="POST">
                           <input type="hidden" name="userId" value={u.id} />
-                          <input
-                            type="hidden"
-                            name="redirectTo"
-                            value={currentUrl}
-                          />
+                          <input type="hidden" name="redirectTo" value={currentUrl} />
                           <button
                             type="submit"
                             className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted"
@@ -253,14 +419,16 @@ export default async function TenantUsersPage({
                           </button>
                         </form>
 
-                        {/* Manage page */}
-                        <Link
-                          href={`/admin/tenants/${tenantId}/users/${u.id}`}
-                          className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted"
-                          title="Open user management"
-                        >
-                          Manage
-                        </Link>
+                        {/* Manage page (hidden for actor's own row when they are L3 here) */}
+                        {!hideManage && (
+                          <Link
+                            href={`/admin/tenants/${tenantId}/users/${u.id}`}
+                            className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted"
+                            title="Open user management"
+                          >
+                            Manage
+                          </Link>
+                        )}
                       </div>
                     </td>
                   </tr>

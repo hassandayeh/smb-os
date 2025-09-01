@@ -115,6 +115,9 @@ model User {
   supervisedMembers TenantMembership[] @relation("SupervisorRelation")
   userEntitlements  UserEntitlement[]
 
+  // NEW — Local auth sessions (back-relation)
+  sessions AuthSession[] // NEW
+
   // Email is unique within a tenant
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -246,4 +249,20 @@ model UserEntitlement {
   @@index([tenantId])
   @@index([moduleKey])
   @@map("UserEntitlements")
+}
+
+// ======== NEW: Local Auth Sessions ========
+
+model AuthSession {
+  id        String    @id @default(cuid()) // internal id
+  token     String    @unique // opaque random token stored in cookie "sid"
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+  expiresAt DateTime // e.g., now() + 7 days
+  revokedAt DateTime? // optional manual invalidation
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("AuthSessions")
 }

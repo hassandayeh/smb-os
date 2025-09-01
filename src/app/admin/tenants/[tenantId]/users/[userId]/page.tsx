@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import SubmitButton from "@/components/SubmitButton";
 import RoleSelect from "./RoleSelect";
 import ConfirmDeleteButton from "./ConfirmDeleteButton";
+import { getCurrentUserId } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -85,7 +86,7 @@ export default async function ManageTenantUserPage({
       select: { id: true, role: true, isActive: true, createdAt: true, updatedAt: true },
     }),
     prisma.userEntitlement.findMany({
-      where: { tenantId, userId, moduleKey: { in: [...MODULE_KEYS] } },
+      where: { tenantId, userId, moduleKey: { in: ["inventory", "invoices"] } },
       select: { moduleKey: true, isEnabled: true },
     }),
   ]);
@@ -96,12 +97,24 @@ export default async function ManageTenantUserPage({
     return acc;
   }, {} as Record<(typeof MODULE_KEYS)[number], boolean | undefined>);
   for (const e of entRows) {
-    if (MODULE_KEYS.includes(e.moduleKey as any)) {
+    if ((MODULE_KEYS as readonly string[]).includes(e.moduleKey)) {
       entMap[e.moduleKey as (typeof MODULE_KEYS)[number]] = e.isEnabled;
     }
   }
 
   const isActive = membership?.isActive ?? true;
+
+  // Figure out if the actor is a platform admin (DEVELOPER/APP_ADMIN)
+  const actorUserId = await getCurrentUserId();
+  let isPlatform = false;
+  if (actorUserId) {
+    const roles = await prisma.appRole.findMany({
+      where: { userId: actorUserId },
+      select: { role: true },
+    });
+    const rset = new Set(roles.map((r) => r.role));
+    isPlatform = rset.has("DEVELOPER") || rset.has("APP_ADMIN");
+  }
 
   // Map toast keys to human text
   const toastText =
@@ -252,6 +265,7 @@ export default async function ManageTenantUserPage({
               action={`/api/admin/tenants/${tenantId}/users/${userId}`}
               defaultValue={String(membership?.role ?? "MEMBER") as any}
               redirectTo={addQuery(currentUrl, { toast: "role_saved" })}
+              showTenantAdmin={isPlatform}
             />
 
             {/* Activate / Deactivate (only the button) */}

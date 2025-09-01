@@ -11,6 +11,7 @@ type UpdateBody = {
   name?: string;
   role?: "TENANT_ADMIN" | "MANAGER" | "MEMBER";
   isActive?: boolean;
+  supervisorId?: string | null; // Manager mapping for L5
 
   // Delete support
   intent?: string;   // "delete"
@@ -59,24 +60,59 @@ function toEnumRole(v: unknown): TenantMemberRole | undefined {
 async function readBody(req: Request): Promise<UpdateBody> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
-    const j = await req.json().catch(() => ({}));
-    return j as UpdateBody;
+    const j = (await req.json().catch(() => ({}))) as any;
+    return {
+      name: nstr(j.name) || undefined,
+      role: (nstr(j.role) || undefined) as any,
+      isActive: nbool(j.isActive),
+      supervisorId:
+        j.hasOwnProperty("supervisorId")
+          ? (nstr(j.supervisorId) || null)
+          : undefined,
+      redirectTo: nstr(j.redirectTo) || undefined,
+      intent: nstr(j.intent) || undefined,
+      delete: j.delete,
+    };
   }
   if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
     const form = await req.formData();
+    const supRaw = form.get("supervisorId");
     return {
       name: nstr(form.get("name")),
       role: (nstr(form.get("role")) || undefined) as any,
       isActive: nbool(form.get("isActive")),
+      supervisorId:
+        supRaw === null ? undefined : (nstr(supRaw) || null),
       redirectTo: nstr(form.get("redirectTo")) || undefined,
       intent: nstr(form.get("intent")) || undefined,
       delete: nstr(form.get("delete")) || undefined,
     };
   }
-  return (await req.json().catch(() => ({}))) as UpdateBody;
+  const j = (await req.json().catch(() => ({}))) as any;
+  return {
+    name: nstr(j.name) || undefined,
+    role: (nstr(j.role) || undefined) as any,
+    isActive: nbool(j.isActive),
+    supervisorId:
+      j.hasOwnProperty("supervisorId") ? (nstr(j.supervisorId) || null) : undefined,
+    redirectTo: nstr(j.redirectTo) || undefined,
+    intent: nstr(j.intent) || undefined,
+    delete: j.delete,
+  };
 }
 
-// ---------- DELETE (JSON) ----------
+function redirectOrJson(req: Request, redirectTo: string | undefined, payload: any, status: number) {
+  if (redirectTo) {
+    const url = new URL(redirectTo, req.url);
+    if (payload?.error) {
+      url.searchParams.set("error", String(payload.error));
+    }
+    return NextResponse.redirect(url, { status: 303 });
+  }
+  return NextResponse.json(payload, { status });
+}
+
+// ---------- DELETE ----------
 export async function DELETE(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
@@ -84,7 +120,7 @@ export async function DELETE(
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ true);
 }
 
-// ---------- PATCH / POST (form or JSON) ----------
+// ---------- PATCH / POST ----------
 export async function PATCH(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
@@ -130,6 +166,11 @@ async function handleDeleteOrUpdate(
       ? ["1", "true", "on", "yes"].includes(body.delete.toLowerCase())
       : !!body.delete);
 
+  // NEW: L3 cannot self-manage (delete themselves)
+  if (!isPlatform && isTenantAdmin && isDelete && actorUserId === userId) {
+    return redirectOrJson(req, body.redirectTo, { error: "Tenant Admin cannot delete themselves" }, 400);
+  }
+
   if (isDelete) {
     try {
       const [user, membership] = await Promise.all([
@@ -158,21 +199,21 @@ async function handleDeleteOrUpdate(
           },
         });
         if (otherActiveAdmins === 0) {
-          return NextResponse.json(
+          return redirectOrJson(
+            req,
+            body.redirectTo,
             { error: "Cannot delete the last active Tenant Admin" },
-            { status: 400 }
+            400
           );
         }
       }
 
-      // Delete dependents first, then user
       await prisma.$transaction([
         prisma.userEntitlement.deleteMany({ where: { tenantId, userId } }),
         prisma.tenantMembership.deleteMany({ where: { tenantId, userId } }),
         prisma.user.delete({ where: { id: userId } }),
       ]);
 
-      // Audit log (non-fatal)
       try {
         await prisma.auditLog.create({
           data: {
@@ -201,10 +242,12 @@ async function handleDeleteOrUpdate(
     }
   }
 
-  // --- Update path (role / isActive / name) ---
+  // --- Update path (name / role / isActive / supervisorId) ---
   const name = nstr(body.name);
   const roleEnum = toEnumRole(body.role);
   const isActive = body.isActive;
+  const supervisorIdProvided = Object.prototype.hasOwnProperty.call(body, "supervisorId");
+  const supervisorId = body.supervisorId ?? null; // null = unassign manager
 
   try {
     // Fetch existing state
@@ -215,20 +258,26 @@ async function handleDeleteOrUpdate(
       }),
       prisma.tenantMembership.findFirst({
         where: { tenantId, userId },
-        select: { id: true, role: true, isActive: true },
+        select: { id: true, role: true, isActive: true, supervisorId: true },
       }),
     ]);
     if (!user || user.tenantId !== tenantId) {
       return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
     }
 
-    // Prepare updates
+    // NEW: self-management guard for L3 (no role/isActive changes)
+    if (!isPlatform && isTenantAdmin && actorUserId === userId && (roleEnum !== undefined || typeof isActive === "boolean")) {
+      return redirectOrJson(req, body.redirectTo, { error: "Tenant Admin cannot change their own role or status" }, 400);
+    }
+
     let updatedUser = user;
     let updatedMembership = membership;
 
     const before = {
       user: { name: user.name },
-      membership: membership ? { role: membership.role, isActive: membership.isActive } : null,
+      membership: membership
+        ? { role: membership.role, isActive: membership.isActive, supervisorId: membership.supervisorId ?? null }
+        : null,
     };
 
     // Update name (optional)
@@ -245,28 +294,104 @@ async function handleDeleteOrUpdate(
     if (!membershipId) {
       const created = await prisma.tenantMembership.create({
         data: { tenantId, userId, role: roleEnum ?? TenantMemberRole.MEMBER, isActive: true },
-        select: { id: true, role: true, isActive: true },
+        select: { id: true, role: true, isActive: true, supervisorId: true },
       });
       membershipId = created.id;
       updatedMembership = created;
     }
 
-    // Update role/isActive
+    // NEW: compute change-intent for L3 role transitions
+    const wasL3 = updatedMembership?.role === TenantMemberRole.TENANT_ADMIN;
+    const toL3 = roleEnum === TenantMemberRole.TENANT_ADMIN && !wasL3;
+    const fromL3 = wasL3 && roleEnum !== undefined && roleEnum !== TenantMemberRole.TENANT_ADMIN;
+
+    // NEW: only platform can assign/remove L3
+    if ((toL3 || fromL3) && !isPlatform) {
+      return redirectOrJson(req, body.redirectTo, { error: "Only platform admins can assign or remove Tenant Admin" }, 403);
+    }
+
+    // NEW: uniqueness — only one L3 per tenant
+    if (toL3) {
+      const otherAdmins = await prisma.tenantMembership.count({
+        where: { tenantId, role: TenantMemberRole.TENANT_ADMIN, NOT: { userId } },
+      });
+      if (otherAdmins > 0) {
+        return redirectOrJson(req, body.redirectTo, { error: "Only one Tenant Admin is allowed per tenant" }, 400);
+      }
+    }
+
+    // Update role/isActive (if provided)
     if (roleEnum !== undefined || typeof isActive === "boolean") {
+      // NEW: last active L3 guard (demote or deactivate)
+      if ((fromL3 || (wasL3 && typeof isActive === "boolean" && isActive === false))) {
+        const otherActiveAdmins = await prisma.tenantMembership.count({
+          where: {
+            tenantId,
+            role: TenantMemberRole.TENANT_ADMIN,
+            isActive: true,
+            NOT: { userId },
+          },
+        });
+        if (otherActiveAdmins === 0) {
+          return redirectOrJson(req, body.redirectTo, { error: "Cannot demote/deactivate the last active Tenant Admin" }, 400);
+        }
+      }
+
       updatedMembership = await prisma.tenantMembership.update({
         where: { id: membershipId! },
         data: {
           ...(roleEnum !== undefined ? { role: roleEnum } : {}),
           ...(typeof isActive === "boolean" ? { isActive } : {}),
         },
-        select: { id: true, role: true, isActive: true },
+        select: { id: true, role: true, isActive: true, supervisorId: true },
+      });
+    }
+
+    // Update supervisorId (Manager mapping) — only if supplied
+    if (supervisorIdProvided) {
+      // Only platform admins or tenant admins can change mapping
+      if (!isPlatform && !isTenantAdmin) {
+        return NextResponse.json({ error: "forbidden" }, { status: 403 });
+      }
+
+      // Only MEMBERS can have a manager
+      const roleNow = updatedMembership?.role ?? roleEnum ?? TenantMemberRole.MEMBER;
+      if (roleNow !== TenantMemberRole.MEMBER) {
+        return redirectOrJson(req, body.redirectTo, { error: "Only Members can be assigned a Manager" }, 400);
+      }
+
+      // Prevent self-manager
+      if (supervisorId && supervisorId === userId) {
+        return redirectOrJson(req, body.redirectTo, { error: "A user cannot be their own manager" }, 400);
+      }
+
+      // If assigning (not clearing), validate manager is active MANAGER in same tenant
+      if (supervisorId) {
+        const mgr = await prisma.tenantMembership.findFirst({
+          where: { tenantId, userId: supervisorId, role: TenantMemberRole.MANAGER, isActive: true },
+          select: { userId: true },
+        });
+        if (!mgr) {
+          return redirectOrJson(
+            req,
+            body.redirectTo,
+            { error: "Selected manager is not an active Manager in this tenant" },
+            400
+          );
+        }
+      }
+
+      updatedMembership = await prisma.tenantMembership.update({
+        where: { id: membershipId! },
+        data: { supervisorId },
+        select: { id: true, role: true, isActive: true, supervisorId: true },
       });
     }
 
     const after = {
       user: { name: updatedUser.name },
       membership: updatedMembership
-        ? { role: updatedMembership.role, isActive: updatedMembership.isActive }
+        ? { role: updatedMembership.role, isActive: updatedMembership.isActive, supervisorId: updatedMembership.supervisorId ?? null }
         : null,
     };
 
