@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
+import { getCurrentUserId } from "@/lib/current-user";
 
 /**
  * Effective access rule (Pyramids):
@@ -114,6 +116,24 @@ export async function requireAccess(params: {
     throw error;
   }
   return true;
+}
+
+/**
+ * Layout-first helper for tenant modules.
+ * Central wrapper that reuses requireAccess() and handles redirect uniformly.
+ * Pages/layouts should call ONLY this (no ad-hoc redirects or user lookups).
+ */
+export async function ensureModuleAccessOrRedirect(
+  tenantId: string,
+  moduleKey: string
+): Promise<void> {
+  const userId = await getCurrentUserId(); // respects impersonation cookie in your impl
+  try {
+    await requireAccess({ userId, tenantId, moduleKey });
+  } catch (err: any) {
+    const reason = (err && (err.reason as string)) || "forbidden";
+    redirect(`/forbidden?reason=${encodeURIComponent(reason)}`);
+  }
 }
 
 /* -------------------------------------------------------------------------- */

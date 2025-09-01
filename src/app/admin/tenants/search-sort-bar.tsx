@@ -27,176 +27,66 @@ export default function SearchSortBar({
   // Local UI state
   const [q, setQ] = useState(qInitial);
   const [sort, setSort] = useState(sortInitial);
-  const [status, setStatus] = useState(sp.get("status") ?? ""); // existing
-  const [type, setType] = useState(sp.get("type") ?? "all");    // NEW
+  // Status remains supported if present in the URL; no “Apply” button—auto sync.
+  const statusFromUrl = sp.get("status") ?? "";
 
-  // Keep a debounce timer
-  const timerRef = useRef<number | null>(null);
-
-  // Helper to push new URL query params
-  const pushQuery = useCallback(
-    (nextQ: string, nextSort: string, replace = true) => {
-      const params = new URLSearchParams(sp?.toString() || "");
-      // q
-      if (nextQ) params.set("q", nextQ);
-      else params.delete("q");
-      // sort
-      if (nextSort) params.set("sort", nextSort);
-      // status (existing)
-      if (status) params.set("status", status);
-      else params.delete("status");
-      // type (NEW)
-      const normType = (type || "all").toLowerCase();
-      if (normType !== "all") params.set("type", normType);
-      else params.delete("type");
-
-      // reset page on any filter change
-      params.delete("page");
-
-      const url = `${pathname}?${params.toString()}`;
-      replace ? router.replace(url) : router.push(url);
+  // Debounce search text
+  const timer = useRef<number | null>(null);
+  const schedulePush = useCallback(
+    (nextQ: string, nextSort: string) => {
+      if (timer.current) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        const params = new URLSearchParams(sp?.toString());
+        // keep existing status if present
+        if (nextQ) params.set("q", nextQ);
+        else params.delete("q");
+        if (nextSort) params.set("sort", nextSort);
+        else params.delete("sort");
+        if (statusFromUrl) params.set("status", statusFromUrl);
+        const qs = params.toString();
+        router.push(qs ? `${pathname}?${qs}` : pathname);
+      }, delay);
     },
-    [pathname, router, sp, status, type]
+    [router, pathname, sp, delay, statusFromUrl]
   );
 
-  // Debounce: when q changes via typing, update URL after delay
-  useEffect(() => {
-    // Skip initial mount if values equal initial (avoid duplicate replace)
-    if (
-      q === qInitial &&
-      sort === sortInitial &&
-      (sp.get("status") ?? "") === status &&
-      (sp.get("type") ?? "all") === type
-    )
-      return;
+  // Sync if initial props change (SSR→CSR hydration)
+  useEffect(() => setQ(qInitial), [qInitial]);
+  useEffect(() => setSort(sortInitial), [sortInitial]);
 
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      pushQuery(q, sort, true);
-    }, delay);
+  // Handlers
+  function onChangeQ(e: React.ChangeEvent<HTMLInputElement>) {
+    const next = e.target.value;
+    setQ(next);
+    schedulePush(next, sort);
+  }
 
-    return () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q]);
-
-  // Sort changes trigger immediate update (no debounce)
-  useEffect(() => {
-    if (sort === sortInitial && q === qInitial) return;
-    pushQuery(q, sort, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sort]);
-
-  // Status changes trigger immediate update (same behavior as sort)
-  useEffect(() => {
-    pushQuery(q, sort, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
-
-  // NEW: Type changes trigger immediate update (same behavior as sort)
-  useEffect(() => {
-    pushQuery(q, sort, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [type]);
-
-  // Submit (Enter) forces immediate push (no debounce)
-  const onSubmit = useCallback(
-    (e: FormEvent) => {
-      e.preventDefault();
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-      pushQuery(q, sort, false); // push adds to history on explicit submit
-    },
-    [pushQuery, q, sort]
-  );
-
-  // Clear only resets q (keeps sort/status/type as chosen)
-  const onClear = useCallback(() => {
-    setQ("");
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    pushQuery("", sort, true);
-  }, [pushQuery, sort]);
-
-  const hasQuery = useMemo(() => q.trim().length > 0, [q]);
+  function onChangeSort(e: React.ChangeEvent<HTMLSelectElement>) {
+    const next = e.target.value;
+    setSort(next);
+    schedulePush(q, next);
+  }
 
   return (
-    <form onSubmit={onSubmit} className="flex items-center gap-2">
-      {/* Search input with a clear (X) button */}
-      <div className="relative">
-        <input
-          type="text"
-          name="q"
-          placeholder="Search by name or ID…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="h-9 w-64 rounded-md border px-3 pe-8 text-sm outline-none focus:ring-2"
-          aria-label="Search tenants"
-        />
-        {hasQuery && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="absolute inset-y-0 right-0 me-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
-            aria-label="Clear search"
-            title="Clear"
-          >
-            ×
-          </button>
-        )}
-      </div>
-
-      {/* Sort select */}
+    <div className="flex flex-wrap items-center gap-2">
+      <input
+        placeholder="Search by name or ID..."
+        className="h-9 min-w-[240px] rounded-md border px-3 text-sm"
+        value={q}
+        onChange={onChangeQ}
+      />
       <select
-        name="sort"
-        value={sort}
-        onChange={(e) => setSort(e.target.value)}
         className="h-9 rounded-md border px-2 text-sm"
-        aria-label="Sort tenants"
+        value={sort}
+        onChange={onChangeSort}
       >
-        {sortOptions.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
+        {sortOptions.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
           </option>
         ))}
       </select>
-
-      {/* Status select (existing) */}
-      <select
-        name="status"
-        value={status}
-        onChange={(e) => setStatus(e.target.value)}
-        className="h-9 rounded-md border px-2 text-sm"
-        aria-label="Filter by status"
-        title="Status"
-      >
-        <option value="">All statuses</option>
-        <option value="ACTIVE">Active</option>
-        <option value="SUSPENDED">Suspended</option>
-      </select>
-
-      {/* NEW: Type select (Parent/Child/Standalone/All) */}
-      <select
-        name="type"
-        value={type}
-        onChange={(e) => setType(e.target.value)}
-        className="h-9 rounded-md border px-2 text-sm"
-        aria-label="Filter by type"
-        title="Type"
-      >
-        <option value="all">All types</option>
-        <option value="parent">Parents</option>
-        <option value="child">Children</option>
-        <option value="standalone">Standalone</option>
-      </select>
-
-      {/* Single Apply button (unchanged) */}
-      <button
-        type="submit"
-        className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
-        title="Apply now (Enter)"
-      >
-        Apply
-      </button>
-    </form>
+      {/* No Type dropdown, no Apply button */}
+    </div>
   );
 }

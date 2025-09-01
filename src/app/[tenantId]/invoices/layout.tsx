@@ -1,27 +1,17 @@
-// src/app/[tenantId]/inventory/layout.tsx
+// src/app/[tenantId]/invoices/layout.tsx
 import { ReactNode } from "react";
-import { redirect } from "next/navigation";
-import { getCurrentUserId } from "@/lib/current-user";
-import { requireAccess } from "@/lib/access";
+import { ensureModuleAccessOrRedirect } from "@/lib/access";
 
 export const dynamic = "force-dynamic";
 
-export default async function InventoryLayout({
+export default async function InvoicesLayout({
   children,
   params,
 }: {
   children: ReactNode;
   params: { tenantId: string };
 }) {
-  const { tenantId } = params;
-
-  try {
-    const userId = await getCurrentUserId(); // uses previewUserId cookie if present
-    await requireAccess({ userId, tenantId, moduleKey: "inventory" });
-  } catch (err: any) {
-    const reason = (err as any)?.reason ?? "forbidden";
-    redirect(`/forbidden?reason=${encodeURIComponent(reason)}`);
-  }
-
+  // ✅ Keystone compliance: layout-first module access guard for all invoices pages
+  await ensureModuleAccessOrRedirect(params.tenantId, "invoices");
   return <>{children}</>;
 }

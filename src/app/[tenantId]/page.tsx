@@ -35,9 +35,14 @@ export default async function TenantHomePage({
   );
   const accessibleKeys = checks.filter((c) => c.allowed).map((c) => c.moduleKey);
 
+  // Horizon → Keystone: only show modules that actually exist as implemented routes today.
+  // (Prevents 404s like the legacy "sub-tenants" card.)
+  const implemented = new Set(["inventory", "invoices"]);
+  const usableKeys = accessibleKeys.filter((k) => implemented.has(k));
+
   // Get display names for those modules
   const modules = await prisma.module.findMany({
-    where: { key: { in: accessibleKeys } },
+    where: { key: { in: usableKeys } },
     select: { key: true, name: true, description: true },
     orderBy: { key: "asc" },
   });
