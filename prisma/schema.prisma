@@ -39,8 +39,8 @@ enum PlatformRole {
 // NEW — Tenant-scoped roles (L3/L4/L5)
 enum TenantMemberRole {
   TENANT_ADMIN // L3
-  MANAGER // L4
-  MEMBER // L5
+  MANAGER      // L4
+  MEMBER       // L5
 }
 
 /// ---- Models ----
@@ -57,10 +57,10 @@ model Tenant {
   defaultLocale String @default("en")
 
   /// Industry/type of this tenant, used for presets (pharmacy|factory|services, etc.)
-  industry String?
+  industry String?                     // ← optional
 
   // --- Hierarchy (parent/child tenants) ---
-  parentTenantId String?
+  parentTenantId String?               // ← optional
   parent         Tenant?  @relation("TenantChildren", fields: [parentTenantId], references: [id])
   children       Tenant[] @relation("TenantChildren")
 
@@ -93,11 +93,13 @@ model User {
 
   name         String
   email        String
+  /// Username sign-in (unique per tenant)
+  username     String                    // ← REQUIRED
   passwordHash String
   role         UserRole @default(MEMBER)
 
   /// Optional per-user language override (falls back to tenant default)
-  localeOverride String?
+  localeOverride String?                 // ← optional
 
   // Soft delete
   deletedAt DateTime?
@@ -116,10 +118,11 @@ model User {
   userEntitlements  UserEntitlement[]
 
   // NEW — Local auth sessions (back-relation)
-  sessions AuthSession[] // NEW
+  sessions AuthSession[]
 
-  // Email is unique within a tenant
+  // Uniques / indexes
   @@unique([tenantId, email])
+  @@unique([tenantId, username])        // ← per-tenant uniqueness
   @@index([tenantId, role])
   @@map("Users")
 }
@@ -128,7 +131,7 @@ model Module {
   /// Stable key (e.g., "inventory", "invoices")
   key         String  @id
   name        String
-  description String?
+  description String?                     // ← optional
 
   createdAt DateTime @default(now())
 
@@ -169,7 +172,7 @@ model AuditLog {
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
   /// The user who performed the action (admin/member). Can be null for system actions.
-  actorUserId String?
+  actorUserId String?                  // ← optional
   actor       User?   @relation(fields: [actorUserId], references: [id])
 
   /// Short verb, e.g., "TENANT_CREATE", "ENTITLEMENT_TOGGLE", "ACTIVATION_EXTEND"
@@ -186,32 +189,30 @@ model AuditLog {
   @@map("AuditLog")
 }
 
-// ======== NEW: Project Pyramids — Phase 0 (revised: surrogate PKs to avoid Studio bug) ========
+// ======== NEW: Project Pyramids — Phase 0 (surrogate PKs) ========
 
-// Platform-level role grants (L1/L2)
 model AppRole {
-  id     String       @id @default(cuid()) // NEW: surrogate PK
+  id     String       @id @default(cuid())
   userId String
   role   PlatformRole
   user   User         @relation(fields: [userId], references: [id])
 
   createdAt DateTime @default(now())
 
-  @@unique([userId, role]) // preserves invariant
+  @@unique([userId, role])
   @@index([role])
   @@map("AppRoles")
 }
 
-// Per-tenant membership & hierarchy (L3/L4/L5)
 model TenantMembership {
-  id       String           @id @default(cuid()) // NEW: surrogate PK
+  id       String           @id @default(cuid())
   userId   String
   tenantId String
   role     TenantMemberRole
   isActive Boolean          @default(true)
 
   /// Optional supervisor for L5 (and sometimes L4). Points to another User.
-  supervisorId String?
+  supervisorId String?      // ← optional
   supervisor   User?   @relation("SupervisorRelation", fields: [supervisorId], references: [id])
 
   /// Modules this member can grant to their subordinates (L4 delegating to L5)
@@ -229,9 +230,8 @@ model TenantMembership {
   @@map("TenantMemberships")
 }
 
-// Per-user module switches (applies only if tenant-level entitlement is ON)
 model UserEntitlement {
-  id        String @id @default(cuid()) // NEW: surrogate PK
+  id        String @id @default(cuid())
   userId    String
   tenantId  String
   moduleKey String
@@ -245,22 +245,22 @@ model UserEntitlement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([userId, tenantId, moduleKey]) // stronger uniqueness for future multi-tenant users
+  @@unique([userId, tenantId, moduleKey])
   @@index([tenantId])
   @@index([moduleKey])
   @@map("UserEntitlements")
 }
 
-// ======== NEW: Local Auth Sessions ========
+// ======== Local Auth Sessions ========
 
 model AuthSession {
-  id        String    @id @default(cuid()) // internal id
-  token     String    @unique // opaque random token stored in cookie "sid"
+  id        String    @id @default(cuid())
+  token     String    @unique
   userId    String
   user      User      @relation(fields: [userId], references: [id])
   createdAt DateTime  @default(now())
-  expiresAt DateTime // e.g., now() + 7 days
-  revokedAt DateTime? // optional manual invalidation
+  expiresAt DateTime
+  revokedAt DateTime?
 
   @@index([userId])
   @@index([expiresAt])

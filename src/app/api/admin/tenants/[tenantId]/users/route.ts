@@ -9,6 +9,8 @@ export const dynamic = "force-dynamic";
 type CreateUserBody = {
   name?: string;
   email?: string;
+  /** NEW: optional on input; if omitted we’ll derive from email local-part */
+  username?: string;
   role?: "TENANT_ADMIN" | "MANAGER" | "MEMBER";
   redirectTo?: string;
 };
@@ -43,6 +45,13 @@ function normalizeName(v: unknown) {
   return t.length ? t : "";
 }
 
+// username rules: lowercase, digits, hyphen, 3..30 chars
+function normalizeUsername(v: unknown) {
+  if (typeof v !== "string") return "";
+  const base = v.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return base.slice(0, 30);
+}
+
 function isValidRole(v: unknown): v is CreateUserBody["role"] {
   return v === "TENANT_ADMIN" || v === "MANAGER" || v === "MEMBER";
 }
@@ -70,11 +79,33 @@ async function readBody(req: Request): Promise<CreateUserBody> {
     return {
       name: String(form.get("name") ?? ""),
       email: String(form.get("email") ?? ""),
+      username: String(form.get("username") ?? ""),
       role: (form.get("role") as any) ?? undefined,
       redirectTo: String(form.get("redirectTo") ?? ""),
     };
   }
   return (await req.json().catch(() => ({}))) as CreateUserBody;
+}
+
+// Ensure username uniqueness within tenant by suffixing -1, -2, ...
+async function ensureUniqueUsername(tenantId: string, desiredRaw: string): Promise<string> {
+  const desired = normalizeUsername(desiredRaw);
+  const base = desired || "user";
+  // First try the base
+  let candidate = base;
+  let i = 1;
+  // Cap attempts sensibly
+  while (true) {
+    const exists = await prisma.user.findFirst({
+      where: { tenantId, username: candidate },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+    const suffix = `-${i++}`;
+    const head = base.slice(0, Math.max(1, 30 - suffix.length));
+    candidate = `${head}${suffix}`;
+    if (i > 5000) throw new Error("Could not find a unique username");
+  }
 }
 
 // --- POST /api/admin/tenants/[tenantId]/users -----------------------------
@@ -103,10 +134,11 @@ export async function POST(
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  // Read input
+  // Read & validate input
   const body = await readBody(req);
   const email = normalizeEmail(body.email);
   const inputName = normalizeName(body.name);
+  const inputUsername = normalizeUsername(body.username);
   const role = body.role;
 
   if (!email) {
@@ -127,29 +159,70 @@ export async function POST(
     "User";
 
   try {
-    // Find or create User by composite unique (tenantId + email)
+    // Does a user with this (tenantId, email) already exist?
     let user = await prisma.user.findUnique({
       where: { tenantId_email: { tenantId, email } },
-      select: { id: true, email: true, name: true, createdAt: true },
+      select: { id: true, email: true, name: true, username: true, createdAt: true },
     });
 
+    // If creating a new user, we must assign a username (input or derived from email local-part)
+    let usernameToUse = inputUsername;
+    if (!usernameToUse) {
+      const emailLocal = email.includes("@") ? email.split("@")[0] : email;
+      usernameToUse = normalizeUsername(emailLocal);
+    }
+
     if (!user) {
+      // If username provided explicitly, verify availability first for a friendly 409
+      if (inputUsername) {
+        const taken = await prisma.user.findFirst({
+          where: { tenantId, username: inputUsername },
+          select: { id: true },
+        });
+        if (taken) {
+          return NextResponse.json({ error: "username already taken in this tenant" }, { status: 409 });
+        }
+      }
+
+      const uniqueUsername = await ensureUniqueUsername(tenantId, usernameToUse);
+
       user = await prisma.user.create({
         data: {
           tenantId,
           email,
-          name: derivedName,                // <= guaranteed string
-          passwordHash: "__dev_placeholder__", // TEMP until real auth
+          name: derivedName,
+          username: uniqueUsername,
+          passwordHash: "__dev_placeholder__", // TODO: replace when wiring real invites/passwords
         },
-        select: { id: true, email: true, name: true, createdAt: true },
+        select: { id: true, email: true, name: true, username: true, createdAt: true },
       });
-    } else if (inputName && !user.name) {
-      // Backfill name only if currently empty
-      user = await prisma.user.update({
-        where: { tenantId_email: { tenantId, email } },
-        data: { name: inputName },
-        select: { id: true, email: true, name: true, createdAt: true },
-      });
+    } else {
+      // Existing user under same tenant/email:
+      // - If a name was provided and current name is empty, backfill it.
+      // - If a username was provided and different, try to set it (respect uniqueness).
+      if (inputName && !user.name) {
+        user = await prisma.user.update({
+          where: { tenantId_email: { tenantId, email } },
+          data: { name: inputName },
+          select: { id: true, email: true, name: true, username: true, createdAt: true },
+        });
+      }
+      if (inputUsername && inputUsername !== user.username) {
+        // Try to set; if unique violation happens, catch below
+        try {
+          user = await prisma.user.update({
+            where: { tenantId_email: { tenantId, email } },
+            data: { username: inputUsername },
+            select: { id: true, email: true, name: true, username: true, createdAt: true },
+          });
+        } catch (e: any) {
+          // Prisma unique error code P2002
+          const msg = typeof e?.code === "string" && e.code === "P2002"
+            ? "username already taken in this tenant"
+            : "failed to set username";
+          return NextResponse.json({ error: msg }, { status: 409 });
+        }
+      }
     }
 
     // Create or update TenantMembership
@@ -177,11 +250,12 @@ export async function POST(
       await prisma.auditLog.create({
         data: {
           tenantId,
-          actorUserId,
+          actorUserId: actorUserId,
           action: "user.create",
           metaJson: {
             targetUserId: user.id,
             email: user.email,
+            username: user.username,
             role: membership.role,
           },
         },
