@@ -61,10 +61,17 @@ export default async function TenantUsersPage({
         email: true,
         role: true, // kept for future use, not shown now
         createdAt: true,
+        username: true, // NEW: we show/need usernames
+        appRoles: { select: { role: true } }, // NEW: for Platform tenant "Platform role" column
       },
       orderBy: [{ createdAt: "desc" }],
     }),
   ]);
+
+  // Is this the Platform tenant?
+  const isPlatformTenant =
+    (tenant?.id ?? "").toLowerCase() === "platform" ||
+    (tenant?.name ?? "").toLowerCase() === "platform";
 
   // Build user list helpers
   const userIds = users.map((u) => u.id);
@@ -158,7 +165,7 @@ export default async function TenantUsersPage({
     ? `/admin/tenants/${tenantId}/users?${qsStr}`
     : `/admin/tenants/${tenantId}/users`;
 
-  // helper: role options allowed for the actor
+  // helper: role options allowed for the actor (tenant roles)
   const roleOptionsForActor = (isPlatform: boolean) =>
     isPlatform
       ? (["TENANT_ADMIN", "MANAGER", "MEMBER"] as const)
@@ -202,31 +209,46 @@ export default async function TenantUsersPage({
           <form
             action={`/api/admin/tenants/${tenantId}/users`}
             method="POST"
-            className="grid grid-cols-1 md:grid-cols-[1fr_1fr_180px_auto] gap-3 items-end"
+            className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1fr_180px_auto] gap-3 items-end"
           >
             <div>
               <label className="block text-xs text-muted-foreground mb-1">
-                Name (optional)
+                Name (required)
               </label>
               <input
                 name="name"
+                required
                 type="text"
                 className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="Jane Doe"
               />
             </div>
+
             <div>
               <label className="block text-xs text-muted-foreground mb-1">
-                Email (required)
+                Username (required)
+              </label>
+              <input
+                name="username"
+                required
+                type="text"
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                placeholder="jane-doe"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">
+                Email (optional)
               </label>
               <input
                 name="email"
                 type="email"
-                required
                 className="w-full rounded-md border px-3 py-2 text-sm"
                 placeholder="jane@example.com"
               />
             </div>
+
             <div>
               <label className="block text-xs text-muted-foreground mb-1">
                 Role
@@ -234,8 +256,12 @@ export default async function TenantUsersPage({
               <select
                 name="role"
                 className="w-full rounded-md border px-3 py-2 text-sm"
-                defaultValue="MEMBER"
+                defaultValue={isPlatformTenant ? "APP_ADMIN" : "MEMBER"}
               >
+                {/* When on the Platform tenant, allow creating App Admins (L2) */}
+                {isPlatformTenant && <option value="APP_ADMIN">App Admin</option>}
+
+                {/* Tenant-scoped roles (existing behavior) */}
                 {isPlatform && <option value="TENANT_ADMIN">Tenant Admin</option>}
                 <option value="MANAGER">Manager</option>
                 <option value="MEMBER">Member</option>
@@ -258,7 +284,12 @@ export default async function TenantUsersPage({
             <tr>
               <th className="px-3 py-2">Name</th>
               <th className="px-3 py-2">Email</th>
-              <th className="px-3 py-2">Tenant role</th>
+
+              {/* Column title varies by tenant type */}
+              <th className="px-3 py-2">
+                {isPlatformTenant ? "Platform role" : "Tenant role"}
+              </th>
+
               <th className="px-3 py-2">Supervisor</th>
               <th className="px-3 py-2">Created</th>
               <th className="px-3 py-2">
@@ -296,29 +327,50 @@ export default async function TenantUsersPage({
                   : null;
 
                 const canEditRole =
-                  isPlatform || (actorIsL3Here && u.id !== actorUserId);
+                  !isPlatformTenant && (isPlatform || (actorIsL3Here && u.id !== actorUserId));
                 const roleOptions = roleOptionsForActor(isPlatform);
 
                 const canEditSupervisor =
-                  (isPlatform || actorIsL3Here) && tenantRole === "MEMBER";
+                  !isPlatformTenant && (isPlatform || actorIsL3Here) && tenantRole === "MEMBER";
 
                 // Hide "Manage" when the actor is L3 here and this row is themselves
-                const hideManage = actorIsL3Here && u.id === actorUserId;
+                const hideManage = !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
+
+                // Compute a platform role label if this is the Platform tenant
+                let platformRoleLabel: string | null = null;
+                if (isPlatformTenant) {
+                  const rset = new Set((u.appRoles ?? []).map((r) => r.role));
+                  platformRoleLabel = rset.has("DEVELOPER")
+                    ? "Developer (L1)"
+                    : rset.has("APP_ADMIN")
+                    ? "App Admin (L2)"
+                    : "—";
+                }
 
                 return (
                   <tr key={u.id} className="border-t">
-                    <td className="px-3 py-2 font-medium">{u.name ?? "—"}</td>
+                    <td className="px-3 py-2 font-medium">
+                      {u.name ?? "—"}
+                      <div className="text-xs text-muted-foreground">
+                        @{u.username}
+                      </div>
+                    </td>
                     <td className="px-3 py-2">{u.email ?? "—"}</td>
 
-                    {/* Tenant role pill + inline editor (if allowed) */}
+                    {/* Role column: Platform role OR Tenant role */}
                     <td className="px-3 py-2">
-                      {tenantRole ? (
+                      {isPlatformTenant ? (
+                        <span className="inline-flex items-center rounded-md border px-2 py-1 text-xs">
+                          {platformRoleLabel}
+                        </span>
+                      ) : tenantRole ? (
                         <TenantRolePill role={tenantRole} />
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
 
-                      {canEditRole && (
+                      {/* Inline tenant-role editor (unchanged) — not for Platform tenant */}
+                      {!isPlatformTenant && canEditRole && (
                         <form
                           method="POST"
                           action={`/api/admin/tenants/${tenantId}/membership?redirectTo=${encodeURIComponent(
@@ -349,9 +401,11 @@ export default async function TenantUsersPage({
                       )}
                     </td>
 
-                    {/* Supervisor column (Members only) */}
+                    {/* Supervisor column (Members only) — not relevant for Platform tenant */}
                     <td className="px-3 py-2">
-                      {tenantRole === "MEMBER" ? (
+                      {isPlatformTenant ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : tenantRole === "MEMBER" ? (
                         <>
                           {currentSupervisorId ? (
                             <span className="inline-flex items-center rounded-md border px-2 py-1 text-xs">
@@ -420,7 +474,7 @@ export default async function TenantUsersPage({
                         </form>
 
                         {/* Manage page (hidden for actor's own row when they are L3 here) */}
-                        {!hideManage && (
+                        {!(!isPlatformTenant && hideManage) && (
                           <Link
                             href={`/admin/tenants/${tenantId}/users/${u.id}`}
                             className="inline-flex h-8 items-center rounded-md border px-3 text-xs hover:bg-muted"

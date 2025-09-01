@@ -1,4 +1,3 @@
-// src/lib/access.ts
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -115,4 +114,125 @@ export async function requireAccess(params: {
     throw error;
   }
   return true;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       CENTRALIZED PYRAMIDS ROLE LOGIC                       */
+/* -------------------------------------------------------------------------- */
+
+export type Level = "L1" | "L2" | "L3" | "L4" | "L5";
+export type TargetLevel = Exclude<Level, "L1">; // cannot create L1
+
+/**
+ * Resolve actor level (L1–L5) in the context of a tenant.
+ * - L1 if the user has platform role DEVELOPER
+ * - L2 if the user has platform role APP_ADMIN
+ * - Else based on tenant membership:
+ *    TENANT_ADMIN → L3, MANAGER → L4, MEMBER → L5
+ * - Returns null if no platform role and no membership in tenant.
+ */
+export async function getActorLevel(userId: string, tenantId: string): Promise<Level | null> {
+  // Platform roles take precedence (L1/L2)
+  const platform = await prisma.appRole.findMany({
+    where: { userId },
+    select: { role: true },
+  });
+  const pset = new Set(platform.map((r) => r.role as PlatformRole));
+  if (pset.has("DEVELOPER")) return "L1";
+  if (pset.has("APP_ADMIN")) return "L2";
+
+  // Tenant-scoped roles (L3/L4/L5)
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { userId_tenantId: { userId, tenantId } },
+    select: { role: true, isActive: true },
+  });
+  if (!membership || !membership.isActive) return null;
+
+  switch (membership.role as TenantMemberRole) {
+    case "TENANT_ADMIN":
+      return "L3";
+    case "MANAGER":
+      return "L4";
+    case "MEMBER":
+    default:
+      return "L5";
+  }
+}
+
+/**
+ * Allowed creation targets for each actor level.
+ * Project Pyramids rule:
+ *   L1 → L2, L3, L4, L5
+ *   L2 → L3, L4, L5
+ *   L3 → L4, L5
+ *   L4 → L5
+ *   L5 → (none)
+ */
+export function getCreatableRolesFor(level: Level | null): TargetLevel[] {
+  switch (level) {
+    case "L1":
+      return ["L2", "L3", "L4", "L5"];
+    case "L2":
+      return ["L3", "L4", "L5"];
+    case "L3":
+      return ["L4", "L5"];
+    case "L4":
+      return ["L5"];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Generic manage guard (edit/delete/etc).
+ * By default, self-management is not allowed (allowSelf = false).
+ * - L1 manages all.
+ * - L2 manages L3–L5, but not L1/L2 (including self when allowSelf=false).
+ * - L3 manages L4–L5 (not self).
+ * - L4 manages L5 (not self).
+ * - L5 manages none.
+ */
+export function canManageUser(params: {
+  actorLevel: Level | null;
+  targetLevel: Level | null;
+  allowSelf?: boolean;
+  isSelf?: boolean;
+}): boolean {
+  const { actorLevel, targetLevel, allowSelf = false, isSelf = false } = params;
+  if (!actorLevel || !targetLevel) return false;
+  if (isSelf && !allowSelf) return false;
+
+  if (actorLevel === "L1") return true;
+
+  if (actorLevel === "L2") {
+    return targetLevel === "L3" || targetLevel === "L4" || targetLevel === "L5";
+  }
+
+  if (actorLevel === "L3") {
+    return targetLevel === "L4" || targetLevel === "L5";
+  }
+
+  if (actorLevel === "L4") {
+    return targetLevel === "L5";
+  }
+
+  return false;
+}
+
+/**
+ * Server-side assertion for create-user operations.
+ * Throws an error with status=403 if disallowed.
+ */
+export function assertCanCreateRole(params: {
+  actorLevel: Level | null;
+  requestedLevel: TargetLevel | null;
+}) {
+  const { actorLevel, requestedLevel } = params;
+  const allowed = getCreatableRolesFor(actorLevel).includes((requestedLevel ?? "") as TargetLevel);
+  if (!allowed) {
+    const error = new Error("Forbidden (role.create.not_allowed)");
+    // @ts-expect-error status tag for routes
+    error.status = 403;
+    throw error;
+  }
 }
