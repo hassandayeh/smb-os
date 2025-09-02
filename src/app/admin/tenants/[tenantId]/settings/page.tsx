@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getModuleConfig, getIndustry } from "@/lib/config/moduleConfig";
 import { Prisma } from "@prisma/client"; // for InputJsonValue / DbNull if needed
+import { requireAccess } from "@/lib/guard-page"; // Keystone: centralized admin guard
 
 export const dynamic = "force-dynamic";
 
@@ -13,19 +14,19 @@ type PageProps = {
   searchParams?: { [key: string]: string | string[] | undefined };
 };
 
-// Simple placeholder until your real admin guard is wired
-function canEditSettings(): boolean {
-  return true;
-}
-
 // --- Server actions (admin-only) ---
+// NOTE: Server actions must guard themselves (page-level guard isn't enough).
+async function assertAdmin() {
+  await requireAccess();
+}
 
 // Reset tenant-specific overrides so defaults + industry preset apply.
 export async function resetToIndustryPreset(formData: FormData) {
   "use server";
+  await assertAdmin();
+
   const tenantId = String(formData.get("tenantId") ?? "");
   if (!tenantId) throw new Error("Missing tenantId");
-  if (!canEditSettings()) throw new Error("Not authorized");
 
   const moduleKeys = ["inventory", "invoices", "subtenants"] as const;
 
@@ -54,11 +55,12 @@ export async function resetToIndustryPreset(formData: FormData) {
 // Update a safe knob in subtenants → limitsJson: { maxCount: number }
 export async function updateSubtenantCap(formData: FormData) {
   "use server";
+  await assertAdmin();
+
   const tenantId = String(formData.get("tenantId") ?? "");
   const raw = String(formData.get("maxCount") ?? "").trim();
   if (!tenantId) throw new Error("Missing tenantId");
   if (!raw) throw new Error("Missing maxCount");
-  if (!canEditSettings()) throw new Error("Not authorized");
 
   const maxCount = Number(raw);
   if (!Number.isFinite(maxCount) || maxCount < 0) {
@@ -134,6 +136,9 @@ async function getTenantBasic(tenantId: string) {
 export default async function TenantSettingsPage({ params, searchParams }: PageProps) {
   const tenantId = params.tenantId;
 
+  // Keystone compliance: guard at the very top (admin area)
+  await requireAccess();
+
   // Preserve q/sort for outbound links (UX)
   const sp = searchParams || {};
   const q = typeof sp.q === "string" ? sp.q : "";
@@ -169,29 +174,35 @@ export default async function TenantSettingsPage({ params, searchParams }: PageP
   }
 
   // (#1) Normalize subtenants config for display: prefer `maxCount`, map `max` → `maxCount` if needed
-  const hasMaxCount = subtenantsCfgRaw && typeof subtenantsCfgRaw === "object" && "maxCount" in (subtenantsCfgRaw as any);
-  const hasMax = subtenantsCfgRaw && typeof subtenantsCfgRaw === "object" && "max" in (subtenantsCfgRaw as any);
+  const hasMaxCount =
+    subtenantsCfgRaw &&
+    typeof subtenantsCfgRaw === "object" &&
+    "maxCount" in (subtenantsCfgRaw as any);
+  const hasMax =
+    subtenantsCfgRaw &&
+    typeof subtenantsCfgRaw === "object" &&
+    "max" in (subtenantsCfgRaw as any);
 
   const subtenantsCfg =
     hasMaxCount
       ? subtenantsCfgRaw
       : hasMax
-      ? { ...(subtenantsCfgRaw as Record<string, unknown>), maxCount: (subtenantsCfgRaw as any).max, /* hide legacy */ max: undefined }
+      ? {
+          ...(subtenantsCfgRaw as Record<string, unknown>),
+          maxCount: (subtenantsCfgRaw as any).max,
+          /* hide legacy */ max: undefined,
+        }
       : subtenantsCfgRaw;
 
   // (#4) Pre-fill the input with the effective value
   const effectiveMaxCount =
-    (subtenantsCfg as any)?.maxCount ??
-    (subtenantsCfgRaw as any)?.max ??
-    "";
+    (subtenantsCfg as any)?.maxCount ?? (subtenantsCfgRaw as any)?.max ?? "";
 
   // (#3) Build links that preserve q/sort
   const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : "/admin/tenants";
   const viewTenantHref = qsStr
     ? `/admin/tenants/${tenant.id}?${qsStr}`
     : `/admin/tenants/${tenant.id}`;
-
-  const canEdit = canEditSettings();
 
   return (
     <div className="p-6 space-y-6">
@@ -228,69 +239,73 @@ export default async function TenantSettingsPage({ params, searchParams }: PageP
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="rounded-xl border p-4">
             <div className="font-medium mb-2">inventory</div>
-            <pre className="text-sm overflow-auto">{JSON.stringify(inventoryCfg, null, 2)}</pre>
+            <pre className="text-sm overflow-auto">
+              {JSON.stringify(inventoryCfg, null, 2)}
+            </pre>
           </div>
           <div className="rounded-xl border p-4">
             <div className="font-medium mb-2">invoices</div>
-            <pre className="text-sm overflow-auto">{JSON.stringify(invoicesCfg, null, 2)}</pre>
+            <pre className="text-sm overflow-auto">
+              {JSON.stringify(invoicesCfg, null, 2)}
+            </pre>
           </div>
           <div className="rounded-xl border p-4">
             <div className="font-medium mb-2">subtenants</div>
             {/* show normalized object to avoid "max" + "maxCount" confusion */}
-            <pre className="text-sm overflow-auto">{JSON.stringify(subtenantsCfg, null, 2)}</pre>
+            <pre className="text-sm overflow-auto">
+              {JSON.stringify(subtenantsCfg, null, 2)}
+            </pre>
           </div>
         </div>
         <p className="mt-3 text-sm text-gray-500">
-          These values are computed server-side using <code>getModuleConfig</code>.
-          Admin edit/apply controls arrive in Scope 2.
+          These values are computed server-side using <code>getModuleConfig</code>. Admin edit/apply
+          controls arrive in Scope 2.
         </p>
       </SectionCard>
 
-      {canEdit && (
-        <SectionCard title="Admin Controls">
-          <div className="flex flex-col gap-6">
-            <form action={resetToIndustryPreset} className="flex items-center gap-3">
-              <input type="hidden" name="tenantId" value={tenant.id} />
-              <button
-                type="submit"
-                className="inline-flex items-center rounded-xl border px-4 py-2 hover:bg-muted"
-              >
-                Apply Industry Preset
-              </button>
-              <p className="text-sm text-gray-500">
-                Resets tenant overrides (limitsJson) for inventory, invoices, and subtenants.
-              </p>
-            </form>
+      <SectionCard title="Admin Controls">
+        <div className="flex flex-col gap-6">
+          <form action={resetToIndustryPreset} className="flex items-center gap-3">
+            <input type="hidden" name="tenantId" value={tenant.id} />
+            <button
+              type="submit"
+              className="inline-flex items-center rounded-xl border px-4 py-2 hover:bg-muted"
+            >
+              Apply Industry Preset
+            </button>
+            <p className="text-sm text-gray-500">
+              Resets tenant overrides (limitsJson) for inventory, invoices, and subtenants.
+            </p>
+          </form>
 
-            <form action={updateSubtenantCap} className="flex flex-wrap items-center gap-3">
-              <input type="hidden" name="tenantId" value={tenant.id} />
-              <label htmlFor="maxCount" className="text-sm font-medium">
-                Sub-tenant cap
-              </label>
-              <input
-                id="maxCount"
-                name="maxCount"
-                type="number"
-                min={0}
-                placeholder="e.g. 5"
-                defaultValue={effectiveMaxCount} // ← (#4) prefill current value
-                className="w-32 rounded-xl border px-4 py-2"
-                required
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center rounded-xl border px-4 py-2 hover:bg-muted"
-              >
-                Update
-              </button>
-              <p className="basis-full text-sm text-gray-500">
-                Writes to <code>Entitlement.limitsJson</code> for the <code>subtenants</code> module as
-                <code> {"{ maxCount: number }"}</code>. Audited automatically.
-              </p>
-            </form>
-          </div>
-        </SectionCard>
-      )}
+          <form action={updateSubtenantCap} className="flex flex-wrap items-center gap-3">
+            <input type="hidden" name="tenantId" value={tenant.id} />
+            <label htmlFor="maxCount" className="text-sm font-medium">
+              Sub-tenant cap
+            </label>
+            <input
+              id="maxCount"
+              name="maxCount"
+              type="number"
+              min={0}
+              placeholder="e.g. 5"
+              defaultValue={effectiveMaxCount} // ← prefill current value
+              className="w-32 rounded-xl border px-4 py-2"
+              required
+            />
+            <button
+              type="submit"
+              className="inline-flex items-center rounded-xl border px-4 py-2 hover:bg-muted"
+            >
+              Update
+            </button>
+            <p className="basis-full text-sm text-gray-500">
+              Writes to <code>Entitlement.limitsJson</code> for the <code>subtenants</code> module as{" "}
+              <code>{"{ maxCount: number }"}</code>. Audited automatically.
+            </p>
+          </form>
+        </div>
+      </SectionCard>
     </div>
   );
 }

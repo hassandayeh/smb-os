@@ -1,0 +1,304 @@
+// src/app/[tenantId]/settings/page.tsx
+import { notFound, redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
+import { prisma } from "@/lib/prisma";
+import { ensureL3SettingsAccessOrRedirect } from "@/lib/guard-tenant-settings";
+import { Card, CardContent } from "@/components/ui/card";
+import { TenantMemberRole } from "@prisma/client";
+
+export const metadata = { title: "Settings" };
+export const dynamic = "force-dynamic";
+
+/**
+ * Server action: create user (Keystone-guarded for Business Settings)
+ * - L1/L2: can create TENANT_ADMIN/MANAGER/MEMBER
+ * - L3 (tenant admin): can create MANAGER/MEMBER only
+ * - Enforces optional users cap
+ * - Username uniqueness per tenant (case-insensitive)
+ * - REQUIRED by schema: name, email, passwordHash, tenant relation
+ * - Default password: "123" (same convention as admin create-user)
+ */
+export async function createTenantUser(formData: FormData) {
+  "use server";
+
+  const tenantId = String(formData.get("tenantId") ?? "");
+  const rawUsername = String(formData.get("username") ?? "").trim();
+  const rawName = String(formData.get("name") ?? "").trim();
+  const rawEmail = String(formData.get("email") ?? "").trim();
+  const rawRole = String(formData.get("role") ?? "").trim();
+
+  if (!tenantId) throw new Error("Missing tenantId");
+  if (!rawUsername) throw new Error("Username is required");
+
+
+  // Centralized access guard (L1/L2 OR L3 tenant admin)
+  const gate = await ensureL3SettingsAccessOrRedirect(tenantId);
+
+  const requestedRole = (
+    rawRole === "TENANT_ADMIN" || rawRole === "MANAGER" || rawRole === "MEMBER"
+      ? rawRole
+      : "MEMBER"
+  ) as TenantMemberRole;
+
+  // L3 cannot create TENANT_ADMIN
+  if (gate.level === "L3" && requestedRole === "TENANT_ADMIN") {
+    throw new Error("Only platform staff can create a Tenant Admin.");
+  }
+
+  // User cap (optional)
+  const [capEnt, currentCount] = await Promise.all([
+    prisma.entitlement.findUnique({
+      where: { tenantId_moduleKey: { tenantId, moduleKey: "users" } },
+      select: { limitsJson: true },
+    }),
+    prisma.tenantMembership.count({ where: { tenantId } }),
+  ]);
+
+  let userCap: number | null = null;
+  if (capEnt?.limitsJson && typeof capEnt.limitsJson === "object") {
+    const obj = capEnt.limitsJson as Record<string, unknown>;
+    const a = Number((obj as any).maxUsers);
+    const b = Number((obj as any).maxCount);
+    userCap =
+      Number.isFinite(a) && a >= 0 ? a :
+      Number.isFinite(b) && b >= 0 ? b :
+      null;
+  }
+  if (userCap !== null && currentCount >= userCap) {
+    throw new Error(`User cap reached (${currentCount} / ${userCap}).`);
+  }
+
+  // Prevent duplicate username within the same tenant
+  const normalizedUsername = rawUsername.toLowerCase();
+  const existingMembership = await prisma.tenantMembership.findFirst({
+    where: { tenantId, user: { username: normalizedUsername } },
+    select: { id: true },
+  });
+  if (existingMembership) {
+    throw new Error("A user with this username already exists in this tenant.");
+  }
+
+  // Default password "123" — mirror admin flow (we store a non-empty placeholder/hash-string).
+  // If your admin page uses a helper (e.g., hashPassword("123")), swap the line below to that helper.
+  const defaultPasswordHash = "default:123";
+
+  await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        username: normalizedUsername,
+        name: rawName || normalizedUsername,
+        email: rawEmail,                 // REQUIRED by schema
+        passwordHash: defaultPasswordHash, // REQUIRED by schema
+        tenant: { connect: { id: tenantId } }, // REQUIRED relation
+      },
+      select: { id: true },
+    });
+
+    await tx.tenantMembership.create({
+      data: {
+        tenantId,
+        userId: user.id,
+        role: requestedRole,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId: null,
+        action: "settings.createUser",
+        metaJson: JSON.stringify({
+          idCreated: user.id,
+          username: normalizedUsername,
+          name: rawName || normalizedUsername,
+          email: rawEmail,
+          role: requestedRole,
+          origin: "tenant-settings",
+        }),
+      },
+    });
+  });
+
+  revalidatePath(`/${tenantId}/settings`);
+  redirect(`/${tenantId}/settings?saved=1`);
+}
+
+export default async function TenantL3SettingsPage({
+  params,
+}: {
+  params: { tenantId: string };
+}) {
+  const { tenantId } = params;
+
+  // Keystone compliance: guard FIRST (L1/L2 OR L3 tenant admin)
+  const gate = await ensureL3SettingsAccessOrRedirect(tenantId);
+
+  // Load tenant + members + optional users cap
+  const [tenant, members, userCapEnt, memberCount] = await Promise.all([
+    prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, name: true },
+    }),
+    prisma.tenantMembership.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        role: true,
+        user: { select: { id: true, username: true, email: true, name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.entitlement.findUnique({
+      where: { tenantId_moduleKey: { tenantId, moduleKey: "users" } },
+      select: { limitsJson: true },
+    }),
+    prisma.tenantMembership.count({ where: { tenantId } }),
+  ]);
+
+  if (!tenant) notFound();
+
+  let userCap: number | null = null;
+  if (userCapEnt?.limitsJson && typeof userCapEnt.limitsJson === "object") {
+    const obj = userCapEnt.limitsJson as Record<string, unknown>;
+    const a = Number((obj as any).maxUsers);
+    const b = Number((obj as any).maxCount);
+    userCap =
+      Number.isFinite(a) && a >= 0 ? a :
+      Number.isFinite(b) && b >= 0 ? b :
+      null;
+  }
+
+  const roleOptions: Array<{ value: TenantMemberRole; label: string }> =
+    gate.level === "L1" || gate.level === "L2"
+      ? [
+          { value: "TENANT_ADMIN", label: "Tenant Admin" },
+          { value: "MANAGER", label: "Manager" },
+          { value: "MEMBER", label: "Member" },
+        ]
+      : [
+          { value: "MANAGER", label: "Manager" },
+          { value: "MEMBER", label: "Member" },
+        ];
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">
+            Workspace Settings — <span className="text-muted-foreground">{tenant.name}</span>
+          </h1>
+          <div className="mt-1 text-sm text-muted-foreground">
+            Users: <span className="font-medium text-foreground">{memberCount}</span>
+            {" / "}
+            <span className="font-medium text-foreground">{userCap ?? "∞"}</span>
+          </div>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Level: <span className="font-medium text-foreground">{gate.level}</span>
+        </div>
+      </div>
+
+      {/* Create user */}
+      <Card className="rounded-2xl">
+        <CardContent className="p-6 space-y-4">
+          <div className="text-sm font-medium">Create user</div>
+          <form action={createTenantUser} className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+            <input type="hidden" name="tenantId" value={tenant.id} />
+
+            <div className="sm:col-span-3">
+              <label className="block text-xs text-muted-foreground mb-1">Username</label>
+              <input
+                name="username"
+                required
+                placeholder="e.g. jdoe"
+                className="w-full rounded-xl border px-3 py-2"
+              />
+            </div>
+
+            <div className="sm:col-span-3">
+              <label className="block text-xs text-muted-foreground mb-1">Name</label>
+              <input
+                name="name"
+                required
+                placeholder="e.g. Jane Doe"
+                className="w-full rounded-xl border px-3 py-2"
+              />
+            </div>
+
+            <div className="sm:col-span-3">
+              <label className="block text-xs text-muted-foreground mb-1">Email</label>
+                 <input
+                  name="email"
+                  type="email"
+                  placeholder="name@company.com"
+                  className="w-full rounded-xl border px-3 py-2"
+                />
+            </div>
+
+            <div className="sm:col-span-3">
+              <label className="block text-xs text-muted-foreground mb-1">Role</label>
+              <select name="role" className="w-full rounded-xl border px-3 py-2">
+                {roleOptions.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="sm:col-span-12">
+              <button
+                type="submit"
+                className="inline-flex items-center rounded-xl border px-4 py-2 hover:bg-muted"
+              >
+                Create (default password: 123)
+              </button>
+            </div>
+          </form>
+          <p className="text-xs text-muted-foreground">
+            L3 can create Managers and Members. Only L1/L2 can create a Tenant Admin. Caps are enforced when set.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Users table (ID, Name, Username) */}
+      <Card className="rounded-2xl">
+        <CardContent className="p-6 space-y-4">
+          <div className="text-sm font-medium">Users</div>
+          <div className="rounded-xl border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr className="text-left">
+                  <th className="px-4 py-2">ID</th>
+                  <th className="px-4 py-2">Name</th>
+                  <th className="px-4 py-2">Username</th>
+                  <th className="px-4 py-2">Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr key={m.id} className="border-t">
+                    <td className="px-4 py-2">{m.user.id}</td>
+                    <td className="px-4 py-2">{m.user.name}</td>
+                    <td className="px-4 py-2">{m.user.username}</td>
+                    <td className="px-4 py-2">{m.role}</td>
+                  </tr>
+                ))}
+                {members.length === 0 && (
+                  <tr>
+                    <td className="px-4 py-3 text-muted-foreground" colSpan={4}>
+                      No users yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Next: add update (role change, activate/deactivate) and soft-delete with Keystone guard.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
