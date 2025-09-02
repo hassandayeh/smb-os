@@ -1,30 +1,31 @@
 // src/lib/audit.ts
-import { prisma } from "@/lib/prisma";
+import { prisma } from "@/lib/prisma";     // only the prisma instance is exported
+import { Prisma } from "@prisma/client";   // Prisma as a VALUE (for DbNull) + types
 
 /**
- * Best-effort audit writer.
- * Does not throw if the AuditLog table or shape changes — keeps UX resilient.
+ * Central audit writer. Keeps actions consistent & Keystone-compliant.
+ * If `tx` is provided, writes inside the same transaction.
  */
-export async function writeAudit(data: {
+export async function writeAudit(params: {
   tenantId: string;
-  actorUserId: string | null;
-  action: string;
-  meta?: Record<string, any>;
+  actorUserId: string;
+  action:
+    | "user.delete"
+    | "user.status.changed"
+    | "user.role.changed"
+    | (string & {}); // allow future string actions
+  meta?: Prisma.InputJsonValue | null;
+  tx?: Prisma.TransactionClient | null;
 }) {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        tenantId: data.tenantId,
-        actorUserId: data.actorUserId,
-        action: data.action,
-        // Store as JSON if column is Json, otherwise stringify:
-        metaJson:
-          typeof (prisma as any)._dmmf.modelMap?.AuditLog?.fields?.metaJson !== "undefined"
-            ? (data.meta ?? {})
-            : JSON.stringify(data.meta ?? {}),
-      },
-    });
-  } catch {
-    // swallow — audits should never break user flow
-  }
+  const { tenantId, actorUserId, action, meta = null, tx = null } = params;
+  const client = tx ?? prisma;
+
+  await client.auditLog.create({
+    data: {
+      tenantId,
+      actorUserId,
+      action,
+      metaJson: meta ?? Prisma.DbNull, // store DB NULL when meta is absent
+    },
+  });
 }

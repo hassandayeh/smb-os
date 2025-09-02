@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole, type Prisma } from "@prisma/client";
 import { guardTenantModule } from "@/lib/guard-route"; // ⬅️ Keystone tenant guard
+import { canDeleteUser } from "@/lib/access"; // ⬅️ new centralized guard
+import { writeAudit } from "@/lib/audit"; // ⬅️ centralized audit
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +54,10 @@ async function readBody(req: Request): Promise<UpdateBody> {
       delete: j.delete,
     };
   }
-  if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
+  if (
+    ct.includes("application/x-www-form-urlencoded") ||
+    ct.includes("multipart/form-data")
+  ) {
     const form = await req.formData();
     const supRaw = form.get("supervisorId");
     return {
@@ -79,7 +84,12 @@ async function readBody(req: Request): Promise<UpdateBody> {
   };
 }
 
-function redirectOrJson(req: Request, redirectTo: string | undefined, payload: any, status: number) {
+function redirectOrJson(
+  req: Request,
+  redirectTo: string | undefined,
+  payload: any,
+  status: number
+) {
   if (redirectTo) {
     const url = new URL(redirectTo, req.url);
     if (payload?.error) url.searchParams.set("error", String(payload.error));
@@ -88,30 +98,14 @@ function redirectOrJson(req: Request, redirectTo: string | undefined, payload: a
   return NextResponse.json(payload, { status });
 }
 
-// --- helper: who is platform / L3 here? ---
-async function actorIsPlatformAdmin(userId: string) {
-  const roles = await prisma.appRole.findMany({
-    where: { userId },
-    select: { role: true },
-  });
-  const s = new Set(roles.map((r) => r.role));
-  return s.has("DEVELOPER") || s.has("APP_ADMIN");
-}
-async function actorIsTenantAdmin(userId: string, tenantId: string) {
-  const m = await prisma.tenantMembership.findFirst({
-    where: { tenantId, userId, isActive: true, deletedAt: null },
-    select: { role: true, isActive: true },
-  });
-  return !!m && m.isActive && m.role === "TENANT_ADMIN";
-}
-
-// --- username suffixing (ISO date) ---
+// --- username suffixing (UTC YYYYMMDD) ---
 function yyyymmddUTC(d = new Date()) {
   const y = d.getUTCFullYear();
   const m = (d.getUTCMonth() + 1).toString().padStart(2, "0");
   const day = d.getUTCDate().toString().padStart(2, "0");
   return `${y}${m}${day}`;
 }
+
 async function buildUniqueDeletedUsername(
   tenantId: string,
   baseUsername: string,
@@ -120,10 +114,13 @@ async function buildUniqueDeletedUsername(
   const ISO = yyyymmddUTC();
   const MAX = 64;
   const reserve = 1 + 8; // "-" + date
+
   let core = baseUsername.trim();
   if (core.length + reserve > MAX) core = core.slice(0, MAX - reserve);
+
   let candidate = `${core}-${ISO}`;
   let n = 2;
+
   while (
     await tx.user.findFirst({
       where: { tenantId, username: candidate },
@@ -162,6 +159,7 @@ export async function PATCH(
 
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ false);
 }
+
 export async function POST(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
@@ -179,15 +177,13 @@ async function handleDeleteOrUpdate(
 ) {
   const { tenantId, userId } = params || {};
   if (!tenantId || !userId)
-    return NextResponse.json({ error: "tenantId and userId are required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "tenantId and userId are required" },
+      { status: 400 }
+    );
 
   const actorUserId = await getCurrentUserId();
   if (!actorUserId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-
-  const [isPlatform, isL3Here] = await Promise.all([
-    actorIsPlatformAdmin(actorUserId),
-    actorIsTenantAdmin(actorUserId, tenantId),
-  ]);
 
   const body = await readBody(req);
   const isDelete =
@@ -197,17 +193,32 @@ async function handleDeleteOrUpdate(
       ? ["1", "true", "on", "yes"].includes(body.delete.toLowerCase())
       : !!body.delete);
 
-  // L3 cannot delete themselves (platform can)
-  if (!isPlatform && isL3Here && isDelete && actorUserId === userId) {
-    return redirectOrJson(
-      req,
-      body.redirectTo,
-      { error: "Tenant Admin cannot delete themselves" },
-      400
-    );
-  }
-
+  // Enforce Keystone-level manage rules (central helper)
   if (isDelete) {
+    // No self delete (even for platform staff)
+    if (actorUserId === userId) {
+      return redirectOrJson(
+        req,
+        body.redirectTo,
+        { error: "Self-delete is not allowed" },
+        400
+      );
+    }
+
+    const { allowed, reason } = await canDeleteUser({
+      tenantId,
+      actorUserId,
+      targetUserId: userId,
+    });
+    if (!allowed) {
+      return redirectOrJson(
+        req,
+        body.redirectTo,
+        { error: `Forbidden (${reason ?? "delete.not_allowed"})` },
+        403
+      );
+    }
+
     try {
       const [user, membership] = await Promise.all([
         prisma.user.findUnique({
@@ -219,6 +230,7 @@ async function handleDeleteOrUpdate(
           select: { id: true, role: true, isActive: true, deletedAt: true },
         }),
       ]);
+
       if (!user || user.tenantId !== tenantId)
         return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
 
@@ -231,7 +243,7 @@ async function handleDeleteOrUpdate(
         );
       }
 
-      // Guard: not the last active L3
+      // Additionally protect "last active L3" (business rule intact)
       if (membership.role === TenantMemberRole.TENANT_ADMIN) {
         const others = await prisma.tenantMembership.count({
           where: {
@@ -262,8 +274,9 @@ async function handleDeleteOrUpdate(
           select: { id: true },
         });
 
+        // Soft-delete membership, ensure idempotence by deletedAt null check
         await tx.tenantMembership.updateMany({
-          where: { tenantId, userId, deletedAt: null }, // ⬅️ ensure soft-delete only once
+          where: { tenantId, userId, deletedAt: null },
           data: {
             deletedAt: new Date(),
             deletedByUserId: actorUserId,
@@ -271,25 +284,24 @@ async function handleDeleteOrUpdate(
           },
         });
 
-        await tx.userEntitlement.deleteMany({
-          where: { tenantId, userId },
-        });
+        // Remove per-user entitlements (cleanup)
+        await tx.userEntitlement.deleteMany({ where: { tenantId, userId } });
 
-        await tx.auditLog.create({
-          data: {
-            tenantId,
-            actorUserId,
-            action: "user.delete",
-            metaJson: {
-              targetUserId: userId,
-              email: user.email,
-              name: user.name,
-              oldUsername,
-              newUsername,
-              membershipRole: membership.role ?? null,
-              softDeleted: true,
-            },
+        // Centralized audit writer in the same transaction
+        await writeAudit({
+          tenantId,
+          actorUserId,
+          action: "user.delete",
+          meta: {
+            targetUserId: userId,
+            email: user.email,
+            name: user.name,
+            oldUsername,
+            newUsername,
+            membershipRole: membership.role ?? null,
+            softDeleted: true,
           },
+          tx,
         });
 
         return { oldUsername, newUsername };

@@ -322,3 +322,54 @@ export async function requireL3SettingsAccess(tenantId: string, userId: string |
   err.status = 403;
   throw err;
 }
+
+// --- Centralized delete guard (Keystone) ---
+export async function canDeleteUser(params: {
+  tenantId: string;
+  actorUserId: string;
+  targetUserId: string;
+}): Promise<{ allowed: boolean; reason?: string }> {
+  const { tenantId, actorUserId, targetUserId } = params;
+
+  // Resolve levels
+  const [actorLevel, targetMembership] = await Promise.all([
+    getActorLevel(actorUserId, tenantId), // L1–L5 or null
+    prisma.tenantMembership.findUnique({
+      where: { userId_tenantId: { userId: targetUserId, tenantId } },
+      select: { role: true, isActive: true, deletedAt: true },
+    }),
+  ]);
+
+  if (!targetMembership || !!targetMembership.deletedAt) {
+    return { allowed: false, reason: "target.not_found_or_deleted" };
+  }
+
+  // Map target role to level
+  const role = (targetMembership.role ?? "MEMBER") as
+    | "TENANT_ADMIN"
+    | "MANAGER"
+    | "MEMBER";
+  const targetLevel = role === "TENANT_ADMIN" ? "L3" : role === "MANAGER" ? "L4" : "L5";
+
+  const isSelf = actorUserId === targetUserId;
+
+  // L1/L2 manage all (including L3), self-management still blocked by default
+  if (actorLevel === "L1" || actorLevel === "L2") {
+    if (isSelf) return { allowed: false, reason: "self.manage.forbidden" };
+    return { allowed: true };
+  }
+
+  // L3 rule: can manage only L4/L5; cannot manage L3; cannot manage self
+  const allowed = canManageUser({
+    actorLevel,
+    targetLevel,
+    isSelf,
+    // leave allowSelf=false (explicit)
+  });
+
+  if (!allowed) {
+    return { allowed: false, reason: "L3.can_only_manage_L4_L5_or_forbidden" };
+  }
+
+  return { allowed: true };
+}
