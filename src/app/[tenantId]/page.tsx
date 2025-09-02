@@ -1,7 +1,7 @@
 // src/app/[tenantId]/page.tsx
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { hasModuleAccess } from "@/lib/access";
+import { hasModuleAccess, getActorLevel } from "@/lib/access";
 import { getCurrentUserId } from "@/lib/current-user";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -16,6 +16,11 @@ export default async function TenantHomePage({
 
   // Who's viewing?
   const userId = await getCurrentUserId();
+
+  // Resolve Keystone actor level once (centralized logic, no ad-hoc rules)
+  const actorLevel = userId ? await getActorLevel(userId, tenantId) : null;
+  const canSeeSettings =
+    actorLevel === "L1" || actorLevel === "L2" || actorLevel === "L3";
 
   // Tenant-level enabled modules
   const tenantEnts = await prisma.entitlement.findMany({
@@ -35,8 +40,7 @@ export default async function TenantHomePage({
   );
   const accessibleKeys = checks.filter((c) => c.allowed).map((c) => c.moduleKey);
 
-  // Horizon → Keystone: only show modules that actually exist as implemented routes today.
-  // (Prevents 404s like the legacy "sub-tenants" card.)
+  // Only show modules that actually exist as implemented routes today.
   const implemented = new Set(["inventory", "invoices"]);
   const usableKeys = accessibleKeys.filter((k) => implemented.has(k));
 
@@ -56,7 +60,7 @@ export default async function TenantHomePage({
         </p>
       </div>
 
-      {modules.length === 0 ? (
+      {modules.length === 0 && !canSeeSettings ? (
         <Card className="rounded-2xl">
           <CardContent className="p-6">
             <div className="text-sm text-muted-foreground">
@@ -67,6 +71,7 @@ export default async function TenantHomePage({
         </Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* Module cards */}
           {modules.map((m) => (
             <Card key={m.key} className="rounded-2xl hover:shadow">
               <CardContent className="p-5 space-y-2">
@@ -85,6 +90,26 @@ export default async function TenantHomePage({
               </CardContent>
             </Card>
           ))}
+
+          {/* Keystone-controlled Settings tile (visible to L1/L2/L3 only) */}
+          {canSeeSettings && (
+            <Card className="rounded-2xl hover:shadow">
+              <CardContent className="p-5 space-y-2">
+                <div className="text-base font-medium">Settings</div>
+                <div className="text-sm text-muted-foreground line-clamp-2">
+                  Workspace users & roles
+                </div>
+                <div className="pt-2">
+                  <Link
+                    href={`/${tenantId}/settings`}
+                    className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
+                  >
+                    Open
+                  </Link>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>

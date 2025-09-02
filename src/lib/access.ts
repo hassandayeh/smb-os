@@ -283,3 +283,42 @@ export async function requireAdminAccess(userId?: string | null) {
   err.status = 403;
   throw err;
 }
+
+/* -------------------------------------------------------------------------- */
+/*             NEW: Settings (control plane) guard for L1/L2/L3               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Settings is a tenant control surface, not a feature module.
+ * It should be accessible to L1/L2 (platform) and L3 (tenant admin),
+ * without requiring a tenant entitlement switch.
+ */
+export async function ensureL3SettingsAccessOrRedirect(tenantId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    redirect("/forbidden?reason=AUTH");
+  }
+  const level = await getActorLevel(userId, tenantId);
+  if (level === "L1" || level === "L2" || level === "L3") {
+    return;
+  }
+  redirect("/forbidden?reason=SETTINGS_NOT_ALLOWED");
+}
+
+
+// API helper: throws 403 instead of redirecting (for route handlers)
+export async function requireL3SettingsAccess(tenantId: string, userId: string | null | undefined) {
+  if (!userId) {
+    const err = new Error("Forbidden (AUTH)");
+    // @ts-expect-error tag for route handlers
+    err.status = 403;
+    throw err;
+  }
+  const level = await getActorLevel(userId, tenantId);
+  if (level === "L1" || level === "L2" || level === "L3") return true;
+
+  const err = new Error("Forbidden (SETTINGS_NOT_ALLOWED)");
+  // @ts-expect-error tag for route handlers
+  err.status = 403;
+  throw err;
+}

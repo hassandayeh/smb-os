@@ -369,9 +369,10 @@ export default async function ManageTenantUserPage({
           <div className="text-sm font-medium text-red-700">Danger zone</div>
           <div className="flex flex-wrap gap-2">
             <ConfirmDeleteButton
-              action={`/api/admin/tenants/${tenantId}/users/${userId}`}
-              redirectTo={`/admin/tenants/${tenantId}/users`}
+              action={`/${"api"}/${tenantId}/settings/users/${userId}`}  // -> /api/{tenantId}/settings/users/{userId}
+              redirectTo={`/${"admin"}/tenants/${tenantId}/users`}       // or the settings users list you want
             />
+
             <button
               disabled
               className="inline-flex h-8 items-center rounded-md border px-3 text-xs opacity-60 cursor-not-allowed"

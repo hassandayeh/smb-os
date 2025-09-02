@@ -221,6 +221,10 @@ model TenantMembership {
   user   User   @relation(fields: [userId], references: [id])
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
+  // ⬇️ NEW: soft-delete metadata for membership
+  deletedAt       DateTime?
+  deletedByUserId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

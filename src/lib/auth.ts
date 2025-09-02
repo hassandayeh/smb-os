@@ -102,3 +102,13 @@ export async function verifyPassword(storedHash: string, provided: string): Prom
   // fallback: treat stored as plaintext (ok for local dev only)
   return provided === storedHash;
 }
+
+// src/lib/auth.ts
+import bcrypt from "bcryptjs";
+
+// Existing exports (createSession, verifyPassword, etc.) …
+
+export async function hashPassword(password: string): Promise<string> {
+  const saltRounds = 10;
+  return bcrypt.hash(password, saltRounds);
+}

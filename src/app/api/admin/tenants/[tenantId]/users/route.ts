@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole } from "@prisma/client";
 import { getActorLevel, assertCanCreateRole, type Level } from "@/lib/access";
+import { hashPassword } from "@/lib/auth";
 
 // --- Local dev hasher -------------------------------------------------------
 // TODO: Replace with your real password hasher (bcrypt/argon) when available.

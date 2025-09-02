@@ -5,9 +5,32 @@ import { prisma } from "@/lib/prisma";
 import { ensureL3SettingsAccessOrRedirect } from "@/lib/guard-tenant-settings";
 import { Card, CardContent } from "@/components/ui/card";
 import { TenantMemberRole } from "@prisma/client";
+import Link from "next/link";
+import { hashPassword } from "@/lib/auth"; // ⬅️ use proper hashing
 
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
+
+/** Tiny neutral pill for inline status. */
+function Chip({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "danger" | "success";
+}) {
+  const toneClasses =
+    tone === "danger"
+      ? "bg-red-50 text-red-700 ring-red-200"
+      : tone === "success"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : "bg-slate-100 text-slate-700 ring-slate-200";
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ring-inset ${toneClasses}`}>
+      {children}
+    </span>
+  );
+}
 
 /**
  * Server action: create user (Keystone-guarded for Business Settings)
@@ -16,7 +39,7 @@ export const dynamic = "force-dynamic";
  * - Enforces optional users cap
  * - Username uniqueness per tenant (case-insensitive)
  * - REQUIRED by schema: name, email, passwordHash, tenant relation
- * - Default password: "123" (same convention as admin create-user)
+ * - Default password: now hashed via hashPassword("123")
  */
 export async function createTenantUser(formData: FormData) {
   "use server";
@@ -29,7 +52,6 @@ export async function createTenantUser(formData: FormData) {
 
   if (!tenantId) throw new Error("Missing tenantId");
   if (!rawUsername) throw new Error("Username is required");
-
 
   // Centralized access guard (L1/L2 OR L3 tenant admin)
   const gate = await ensureL3SettingsAccessOrRedirect(tenantId);
@@ -78,18 +100,17 @@ export async function createTenantUser(formData: FormData) {
     throw new Error("A user with this username already exists in this tenant.");
   }
 
-  // Default password "123" — mirror admin flow (we store a non-empty placeholder/hash-string).
-  // If your admin page uses a helper (e.g., hashPassword("123")), swap the line below to that helper.
-  const defaultPasswordHash = "default:123";
+  // ✅ Hash the default password "123" (no stub strings)
+  const defaultPasswordHash = await hashPassword("123");
 
   await prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
       data: {
         username: normalizedUsername,
         name: rawName || normalizedUsername,
-        email: rawEmail,                 // REQUIRED by schema
-        passwordHash: defaultPasswordHash, // REQUIRED by schema
-        tenant: { connect: { id: tenantId } }, // REQUIRED relation
+        email: rawEmail,                      // REQUIRED by schema (optional in UX but column exists)
+        passwordHash: defaultPasswordHash,    // REQUIRED by schema
+        tenant: { connect: { id: tenantId } },// REQUIRED relation
       },
       select: { id: true },
     });
@@ -99,9 +120,11 @@ export async function createTenantUser(formData: FormData) {
         tenantId,
         userId: user.id,
         role: requestedRole,
+        isActive: true,
       },
     });
 
+    // Best-effort audit
     await tx.auditLog.create({
       data: {
         tenantId,
@@ -144,6 +167,7 @@ export default async function TenantL3SettingsPage({
       select: {
         id: true,
         role: true,
+        isActive: true, // ⬅️ needed for status chip
         user: { select: { id: true, username: true, email: true, name: true } },
       },
       orderBy: { createdAt: "asc" },
@@ -227,12 +251,12 @@ export default async function TenantL3SettingsPage({
 
             <div className="sm:col-span-3">
               <label className="block text-xs text-muted-foreground mb-1">Email</label>
-                 <input
-                  name="email"
-                  type="email"
-                  placeholder="name@company.com"
-                  className="w-full rounded-xl border px-3 py-2"
-                />
+              <input
+                name="email"
+                type="email"
+                placeholder="name@company.com"
+                className="w-full rounded-xl border px-3 py-2"
+              />
             </div>
 
             <div className="sm:col-span-3">
@@ -261,7 +285,7 @@ export default async function TenantL3SettingsPage({
         </CardContent>
       </Card>
 
-      {/* Users table (ID, Name, Username) */}
+      {/* Users table (ID, Name, Username, Role, Status, Manage) */}
       <Card className="rounded-2xl">
         <CardContent className="p-6 space-y-4">
           <div className="text-sm font-medium">Users</div>
@@ -273,6 +297,8 @@ export default async function TenantL3SettingsPage({
                   <th className="px-4 py-2">Name</th>
                   <th className="px-4 py-2">Username</th>
                   <th className="px-4 py-2">Role</th>
+                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -282,11 +308,22 @@ export default async function TenantL3SettingsPage({
                     <td className="px-4 py-2">{m.user.name}</td>
                     <td className="px-4 py-2">{m.user.username}</td>
                     <td className="px-4 py-2">{m.role}</td>
+                    <td className="px-4 py-2">
+                      {m.isActive ? <Chip tone="success">Active</Chip> : <Chip tone="danger">Inactive</Chip>}
+                    </td>
+                    <td className="px-4 py-2">
+                      <Link
+                        href={`/${tenantId}/settings/users/${m.user.id}`}
+                        className="text-blue-600 hover:underline"
+                      >
+                        Manage
+                      </Link>
+                    </td>
                   </tr>
                 ))}
                 {members.length === 0 && (
                   <tr>
-                    <td className="px-4 py-3 text-muted-foreground" colSpan={4}>
+                    <td className="px-4 py-3 text-muted-foreground" colSpan={6}>
                       No users yet.
                     </td>
                   </tr>
@@ -295,7 +332,7 @@ export default async function TenantL3SettingsPage({
             </table>
           </div>
           <p className="text-xs text-muted-foreground">
-            Next: add update (role change, activate/deactivate) and soft-delete with Keystone guard.
+            Inline manage: open a user to adjust role, activate/deactivate, or soft-delete.
           </p>
         </CardContent>
       </Card>

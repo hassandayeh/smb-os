@@ -2,7 +2,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
-import { TenantMemberRole } from "@prisma/client";
+import { TenantMemberRole, type Prisma } from "@prisma/client";
+import { requireAccess } from "@/lib/guard-route"; // Keystone admin guard (API)
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,7 @@ type UpdateBody = {
   supervisorId?: string | null; // Manager mapping for L5
 
   // Delete support
-  intent?: string;   // "delete"
+  intent?: string; // "delete"
   delete?: string | boolean;
 
   // For form posts
@@ -32,7 +33,7 @@ async function actorIsPlatformAdmin(userId: string) {
 
 async function actorIsTenantAdmin(userId: string, tenantId: string) {
   const m = await prisma.tenantMembership.findFirst({
-    where: { tenantId, userId, isActive: true },
+    where: { tenantId, userId, isActive: true, deletedAt: null },
     select: { role: true, isActive: true },
   });
   return !!m && m.isActive && m.role === "TENANT_ADMIN";
@@ -66,7 +67,7 @@ async function readBody(req: Request): Promise<UpdateBody> {
       role: (nstr(j.role) || undefined) as any,
       isActive: nbool(j.isActive),
       supervisorId:
-        j.hasOwnProperty("supervisorId")
+        Object.prototype.hasOwnProperty.call(j, "supervisorId")
           ? (nstr(j.supervisorId) || null)
           : undefined,
       redirectTo: nstr(j.redirectTo) || undefined,
@@ -74,15 +75,17 @@ async function readBody(req: Request): Promise<UpdateBody> {
       delete: j.delete,
     };
   }
-  if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
+  if (
+    ct.includes("application/x-www-form-urlencoded") ||
+    ct.includes("multipart/form-data")
+  ) {
     const form = await req.formData();
     const supRaw = form.get("supervisorId");
     return {
       name: nstr(form.get("name")),
       role: (nstr(form.get("role")) || undefined) as any,
       isActive: nbool(form.get("isActive")),
-      supervisorId:
-        supRaw === null ? undefined : (nstr(supRaw) || null),
+      supervisorId: supRaw === null ? undefined : (nstr(supRaw) || null),
       redirectTo: nstr(form.get("redirectTo")) || undefined,
       intent: nstr(form.get("intent")) || undefined,
       delete: nstr(form.get("delete")) || undefined,
@@ -93,15 +96,21 @@ async function readBody(req: Request): Promise<UpdateBody> {
     name: nstr(j.name) || undefined,
     role: (nstr(j.role) || undefined) as any,
     isActive: nbool(j.isActive),
-    supervisorId:
-      j.hasOwnProperty("supervisorId") ? (nstr(j.supervisorId) || null) : undefined,
+    supervisorId: Object.prototype.hasOwnProperty.call(j, "supervisorId")
+      ? (nstr(j.supervisorId) || null)
+      : undefined,
     redirectTo: nstr(j.redirectTo) || undefined,
     intent: nstr(j.intent) || undefined,
     delete: j.delete,
   };
 }
 
-function redirectOrJson(req: Request, redirectTo: string | undefined, payload: any, status: number) {
+function redirectOrJson(
+  req: Request,
+  redirectTo: string | undefined,
+  payload: any,
+  status: number
+) {
   if (redirectTo) {
     const url = new URL(redirectTo, req.url);
     if (payload?.error) {
@@ -117,6 +126,7 @@ export async function DELETE(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
 ) {
+  await requireAccess(); // Keystone guard (admin APIs)
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ true);
 }
 
@@ -125,13 +135,59 @@ export async function PATCH(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
 ) {
+  await requireAccess(); // Keystone guard (admin APIs)
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ false);
 }
 export async function POST(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
 ) {
+  await requireAccess(); // Keystone guard (admin APIs)
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ false);
+}
+
+// Build an ISO date suffix once per request (UTC)
+function yyyymmddUTC(d = new Date()) {
+  const y = d.getUTCFullYear();
+  const m = (d.getUTCMonth() + 1).toString().padStart(2, "0");
+  const day = d.getUTCDate().toString().padStart(2, "0");
+  return `${y}${m}${day}`;
+}
+
+// Ensure the suffixed username is unique per-tenant. Optional length cap.
+async function buildUniqueDeletedUsername(
+  tenantId: string,
+  baseUsername: string,
+  tx: Prisma.TransactionClient
+) {
+  const ISO = yyyymmddUTC();
+  const MAX = 64; // conservative cap; adjust if you add a DB length constraint later
+  const baseTrimmed = baseUsername.trim();
+  // Reserve space for "-YYYYMMDD" and optional "-N"
+  const reserve = 1 + 8; // "-" + date
+  let core = baseTrimmed;
+  if (core.length + reserve > MAX) {
+    core = core.slice(0, MAX - reserve);
+  }
+
+  let candidate = `${core}-${ISO}`;
+  let n = 2;
+  // Check collisions; append "-2", "-3", ... if needed
+  while (
+    await tx.user.findFirst({
+      where: { tenantId, username: candidate },
+      select: { id: true },
+    })
+  ) {
+    const extra = 1 + String(n).length; // "-" + digits
+    const allowedCoreLen = Math.max(1, MAX - reserve - extra);
+    const coreAlt =
+      core.length > allowedCoreLen ? core.slice(0, allowedCoreLen) : core;
+    candidate = `${coreAlt}-${ISO}-${n}`;
+    n++;
+    if (n > 99) break; // safety valve
+  }
+  return candidate;
 }
 
 async function handleDeleteOrUpdate(
@@ -143,7 +199,10 @@ async function handleDeleteOrUpdate(
   const userId = params?.userId;
 
   if (!tenantId || !userId) {
-    return NextResponse.json({ error: "tenantId and userId are required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "tenantId and userId are required" },
+      { status: 400 }
+    );
   }
 
   const actorUserId = await getCurrentUserId();
@@ -168,33 +227,43 @@ async function handleDeleteOrUpdate(
 
   // NEW: L3 cannot self-manage (delete themselves)
   if (!isPlatform && isTenantAdmin && isDelete && actorUserId === userId) {
-    return redirectOrJson(req, body.redirectTo, { error: "Tenant Admin cannot delete themselves" }, 400);
+    return redirectOrJson(
+      req,
+      body.redirectTo,
+      { error: "Tenant Admin cannot delete themselves" },
+      400
+    );
   }
 
   if (isDelete) {
     try {
+      // Fetch essential state
       const [user, membership] = await Promise.all([
         prisma.user.findUnique({
           where: { id: userId },
-          select: { id: true, tenantId: true, email: true, name: true },
+          select: { id: true, tenantId: true, email: true, name: true, username: true },
         }),
         prisma.tenantMembership.findFirst({
           where: { tenantId, userId },
-          select: { id: true, role: true, isActive: true },
+          select: { id: true, role: true, isActive: true, deletedAt: true },
         }),
       ]);
       if (!user || user.tenantId !== tenantId) {
         return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
       }
+      if (!membership || membership.deletedAt) {
+        return redirectOrJson(req, body.redirectTo, { error: "membership not found or already deleted" }, 400);
+      }
 
       // Guard: don't allow deleting the last active Tenant Admin
-      const targetIsAdmin = membership?.role === TenantMemberRole.TENANT_ADMIN;
+      const targetIsAdmin = membership.role === TenantMemberRole.TENANT_ADMIN;
       if (targetIsAdmin) {
         const otherActiveAdmins = await prisma.tenantMembership.count({
           where: {
             tenantId,
             role: TenantMemberRole.TENANT_ADMIN,
             isActive: true,
+            deletedAt: null,
             NOT: { userId },
           },
         });
@@ -208,14 +277,36 @@ async function handleDeleteOrUpdate(
         }
       }
 
-      await prisma.$transaction([
-        prisma.userEntitlement.deleteMany({ where: { tenantId, userId } }),
-        prisma.tenantMembership.deleteMany({ where: { tenantId, userId } }),
-        prisma.user.delete({ where: { id: userId } }),
-      ]);
+      const result = await prisma.$transaction(async (tx) => {
+        // 1) Username suffix (free the handle)
+        const oldUsername = user.username;
+        const newUsername = await buildUniqueDeletedUsername(
+          tenantId,
+          oldUsername,
+          tx
+        );
 
-      try {
-        await prisma.auditLog.create({
+        await tx.user.update({
+          where: { id: userId },
+          data: { username: newUsername },
+          select: { id: true },
+        });
+
+        // 2) Mark membership soft-deleted and inactive
+        await tx.tenantMembership.updateMany({
+          where: { tenantId, userId, deletedAt: null },
+          data: {
+            deletedAt: new Date(),
+            deletedByUserId: actorUserId,
+            isActive: false,
+          },
+        });
+
+        // 3) Remove per-user overrides (as per UI copy)
+        await tx.userEntitlement.deleteMany({ where: { tenantId, userId } });
+
+        // 4) Audit
+        await tx.auditLog.create({
           data: {
             tenantId,
             actorUserId,
@@ -224,21 +315,29 @@ async function handleDeleteOrUpdate(
               targetUserId: userId,
               email: user.email,
               name: user.name,
-              role: membership?.role ?? null,
+              oldUsername,
+              newUsername,
+              membershipRole: membership.role ?? null,
+              softDeleted: true,
             },
           },
         });
-      } catch (e) {
-        console.warn("Audit log failed (user.delete):", e);
-      }
+
+        return { oldUsername, newUsername };
+      });
 
       if (body.redirectTo) {
-        return NextResponse.redirect(new URL(body.redirectTo, req.url), { status: 303 });
+        return NextResponse.redirect(new URL(body.redirectTo, req.url), {
+          status: 303,
+        });
       }
-      return NextResponse.json({ ok: true, deleted: true }, { status: 200 });
+      return NextResponse.json({ ok: true, deleted: true, ...result }, { status: 200 });
     } catch (err) {
       console.error("DELETE user error:", err);
-      return NextResponse.json({ error: "failed to delete user" }, { status: 500 });
+      return NextResponse.json(
+        { error: "failed to delete user" },
+        { status: 500 }
+      );
     }
   }
 
@@ -246,7 +345,10 @@ async function handleDeleteOrUpdate(
   const name = nstr(body.name);
   const roleEnum = toEnumRole(body.role);
   const isActive = body.isActive;
-  const supervisorIdProvided = Object.prototype.hasOwnProperty.call(body, "supervisorId");
+  const supervisorIdProvided = Object.prototype.hasOwnProperty.call(
+    body,
+    "supervisorId"
+  );
   const supervisorId = body.supervisorId ?? null; // null = unassign manager
 
   try {
@@ -254,11 +356,16 @@ async function handleDeleteOrUpdate(
     const [user, membership] = await Promise.all([
       prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, tenantId: true, name: true, email: true },
+        select: { id: true, tenantId: true, name: true, email: true, username: true },
       }),
       prisma.tenantMembership.findFirst({
-        where: { tenantId, userId },
-        select: { id: true, role: true, isActive: true, supervisorId: true },
+        where: { tenantId, userId, deletedAt: null },
+        select: {
+          id: true,
+          role: true,
+          isActive: true,
+          supervisorId: true,
+        },
       }),
     ]);
     if (!user || user.tenantId !== tenantId) {
@@ -266,8 +373,18 @@ async function handleDeleteOrUpdate(
     }
 
     // NEW: self-management guard for L3 (no role/isActive changes)
-    if (!isPlatform && isTenantAdmin && actorUserId === userId && (roleEnum !== undefined || typeof isActive === "boolean")) {
-      return redirectOrJson(req, body.redirectTo, { error: "Tenant Admin cannot change their own role or status" }, 400);
+    if (
+      !isPlatform &&
+      isTenantAdmin &&
+      actorUserId === userId &&
+      (roleEnum !== undefined || typeof isActive === "boolean")
+    ) {
+      return redirectOrJson(
+        req,
+        body.redirectTo,
+        { error: "Tenant Admin cannot change their own role or status" },
+        400
+      );
     }
 
     let updatedUser = user;
@@ -276,7 +393,11 @@ async function handleDeleteOrUpdate(
     const before = {
       user: { name: user.name },
       membership: membership
-        ? { role: membership.role, isActive: membership.isActive, supervisorId: membership.supervisorId ?? null }
+        ? {
+            role: membership.role,
+            isActive: membership.isActive,
+            supervisorId: membership.supervisorId ?? null,
+          }
         : null,
     };
 
@@ -285,7 +406,7 @@ async function handleDeleteOrUpdate(
       updatedUser = await prisma.user.update({
         where: { id: userId },
         data: { name },
-        select: { id: true, tenantId: true, name: true, email: true },
+        select: { id: true, tenantId: true, name: true, email: true, username: true },
       });
     }
 
@@ -293,47 +414,79 @@ async function handleDeleteOrUpdate(
     let membershipId = membership?.id;
     if (!membershipId) {
       const created = await prisma.tenantMembership.create({
-        data: { tenantId, userId, role: roleEnum ?? TenantMemberRole.MEMBER, isActive: true },
-        select: { id: true, role: true, isActive: true, supervisorId: true },
+        data: {
+          tenantId,
+          userId,
+          role: roleEnum ?? TenantMemberRole.MEMBER,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          role: true,
+          isActive: true,
+          supervisorId: true,
+        },
       });
       membershipId = created.id;
       updatedMembership = created;
     }
 
-    // NEW: compute change-intent for L3 role transitions
+    // compute change-intent for L3 role transitions
     const wasL3 = updatedMembership?.role === TenantMemberRole.TENANT_ADMIN;
     const toL3 = roleEnum === TenantMemberRole.TENANT_ADMIN && !wasL3;
-    const fromL3 = wasL3 && roleEnum !== undefined && roleEnum !== TenantMemberRole.TENANT_ADMIN;
+    const fromL3 =
+      wasL3 && roleEnum !== undefined && roleEnum !== TenantMemberRole.TENANT_ADMIN;
 
-    // NEW: only platform can assign/remove L3
+    // only platform can assign/remove L3
     if ((toL3 || fromL3) && !isPlatform) {
-      return redirectOrJson(req, body.redirectTo, { error: "Only platform admins can assign or remove Tenant Admin" }, 403);
+      return redirectOrJson(
+        req,
+        body.redirectTo,
+        { error: "Only platform admins can assign or remove Tenant Admin" },
+        403
+      );
     }
 
-    // NEW: uniqueness — only one L3 per tenant
+    // uniqueness — only one L3 per tenant
     if (toL3) {
       const otherAdmins = await prisma.tenantMembership.count({
-        where: { tenantId, role: TenantMemberRole.TENANT_ADMIN, NOT: { userId } },
+        where: {
+          tenantId,
+          role: TenantMemberRole.TENANT_ADMIN,
+          NOT: { userId },
+          deletedAt: null,
+        },
       });
       if (otherAdmins > 0) {
-        return redirectOrJson(req, body.redirectTo, { error: "Only one Tenant Admin is allowed per tenant" }, 400);
+        return redirectOrJson(
+          req,
+          body.redirectTo,
+          { error: "Only one Tenant Admin is allowed per tenant" },
+          400
+        );
       }
     }
 
     // Update role/isActive (if provided)
     if (roleEnum !== undefined || typeof isActive === "boolean") {
-      // NEW: last active L3 guard (demote or deactivate)
-      if ((fromL3 || (wasL3 && typeof isActive === "boolean" && isActive === false))) {
+      // last active L3 guard (demote or deactivate)
+      if (fromL3 || (wasL3 && typeof isActive === "boolean" && isActive === false)) {
         const otherActiveAdmins = await prisma.tenantMembership.count({
           where: {
             tenantId,
             role: TenantMemberRole.TENANT_ADMIN,
             isActive: true,
+            deletedAt: null,
             NOT: { userId },
           },
         });
         if (otherActiveAdmins === 0) {
-          return redirectOrJson(req, body.redirectTo, { error: "Cannot demote/deactivate the last active Tenant Admin" }, 400);
+          return redirectOrJson(
+            req,
+            body.redirectTo,
+            { error: "Cannot demote/deactivate the last active Tenant Admin" },
+            400
+          );
         }
       }
 
@@ -343,7 +496,12 @@ async function handleDeleteOrUpdate(
           ...(roleEnum !== undefined ? { role: roleEnum } : {}),
           ...(typeof isActive === "boolean" ? { isActive } : {}),
         },
-        select: { id: true, role: true, isActive: true, supervisorId: true },
+        select: {
+          id: true,
+          role: true,
+          isActive: true,
+          supervisorId: true,
+        },
       });
     }
 
@@ -355,20 +513,36 @@ async function handleDeleteOrUpdate(
       }
 
       // Only MEMBERS can have a manager
-      const roleNow = updatedMembership?.role ?? roleEnum ?? TenantMemberRole.MEMBER;
+      const roleNow =
+        updatedMembership?.role ?? roleEnum ?? TenantMemberRole.MEMBER;
       if (roleNow !== TenantMemberRole.MEMBER) {
-        return redirectOrJson(req, body.redirectTo, { error: "Only Members can be assigned a Manager" }, 400);
+        return redirectOrJson(
+          req,
+          body.redirectTo,
+          { error: "Only Members can be assigned a Manager" },
+          400
+        );
       }
-
       // Prevent self-manager
       if (supervisorId && supervisorId === userId) {
-        return redirectOrJson(req, body.redirectTo, { error: "A user cannot be their own manager" }, 400);
+        return redirectOrJson(
+          req,
+          body.redirectTo,
+          { error: "A user cannot be their own manager" },
+          400
+        );
       }
 
       // If assigning (not clearing), validate manager is active MANAGER in same tenant
       if (supervisorId) {
         const mgr = await prisma.tenantMembership.findFirst({
-          where: { tenantId, userId: supervisorId, role: TenantMemberRole.MANAGER, isActive: true },
+          where: {
+            tenantId,
+            userId: supervisorId,
+            role: TenantMemberRole.MANAGER,
+            isActive: true,
+            deletedAt: null,
+          },
           select: { userId: true },
         });
         if (!mgr) {
@@ -384,14 +558,23 @@ async function handleDeleteOrUpdate(
       updatedMembership = await prisma.tenantMembership.update({
         where: { id: membershipId! },
         data: { supervisorId },
-        select: { id: true, role: true, isActive: true, supervisorId: true },
+        select: {
+          id: true,
+          role: true,
+          isActive: true,
+          supervisorId: true,
+        },
       });
     }
 
     const after = {
       user: { name: updatedUser.name },
       membership: updatedMembership
-        ? { role: updatedMembership.role, isActive: updatedMembership.isActive, supervisorId: updatedMembership.supervisorId ?? null }
+        ? {
+            role: updatedMembership.role,
+            isActive: updatedMembership.isActive,
+            supervisorId: updatedMembership.supervisorId ?? null,
+          }
         : null,
     };
 
@@ -410,11 +593,19 @@ async function handleDeleteOrUpdate(
     }
 
     if (body.redirectTo) {
-      return NextResponse.redirect(new URL(body.redirectTo, req.url), { status: 303 });
+      return NextResponse.redirect(new URL(body.redirectTo, req.url), {
+        status: 303,
+      });
     }
-    return NextResponse.json({ ok: true, user: updatedUser, membership: updatedMembership }, { status: 200 });
+    return NextResponse.json(
+      { ok: true, user: updatedUser, membership: updatedMembership },
+      { status: 200 }
+    );
   } catch (err) {
     console.error("PATCH/POST user update error:", err);
-    return NextResponse.json({ error: "failed to update user" }, { status: 500 });
+    return NextResponse.json(
+      { error: "failed to update user" },
+      { status: 500 }
+    );
   }
 }
