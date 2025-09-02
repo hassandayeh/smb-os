@@ -3,8 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole, type Prisma } from "@prisma/client";
-// If you have a tenant module guard wrapper, use it here instead:
-// import { guardTenantModule } from "@/lib/guard-route";
+import { guardTenantModule } from "@/lib/guard-route"; // ⬅️ Keystone tenant guard
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +17,9 @@ type UpdateBody = {
   redirectTo?: string;
 };
 
-function nstr(v: unknown) { return typeof v === "string" ? v.trim() : ""; }
+function nstr(v: unknown) {
+  return typeof v === "string" ? v.trim() : "";
+}
 function nbool(v: unknown): boolean | undefined {
   if (typeof v === "boolean") return v;
   if (typeof v === "string") {
@@ -34,6 +35,7 @@ function toEnumRole(v: unknown): TenantMemberRole | undefined {
   if (v === "MEMBER") return TenantMemberRole.MEMBER;
   return undefined;
 }
+
 async function readBody(req: Request): Promise<UpdateBody> {
   const ct = req.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
@@ -42,7 +44,9 @@ async function readBody(req: Request): Promise<UpdateBody> {
       name: nstr(j.name) || undefined,
       role: (nstr(j.role) || undefined) as any,
       isActive: nbool(j.isActive),
-      supervisorId: Object.prototype.hasOwnProperty.call(j, "supervisorId") ? (nstr(j.supervisorId) || null) : undefined,
+      supervisorId: Object.prototype.hasOwnProperty.call(j, "supervisorId")
+        ? (nstr(j.supervisorId) || null)
+        : undefined,
       redirectTo: nstr(j.redirectTo) || undefined,
       intent: nstr(j.intent) || undefined,
       delete: j.delete,
@@ -66,12 +70,15 @@ async function readBody(req: Request): Promise<UpdateBody> {
     name: nstr(j.name) || undefined,
     role: (nstr(j.role) || undefined) as any,
     isActive: nbool(j.isActive),
-    supervisorId: Object.prototype.hasOwnProperty.call(j, "supervisorId") ? (nstr(j.supervisorId) || null) : undefined,
+    supervisorId: Object.prototype.hasOwnProperty.call(j, "supervisorId")
+      ? (nstr(j.supervisorId) || null)
+      : undefined,
     redirectTo: nstr(j.redirectTo) || undefined,
     intent: nstr(j.intent) || undefined,
     delete: j.delete,
   };
 }
+
 function redirectOrJson(req: Request, redirectTo: string | undefined, payload: any, status: number) {
   if (redirectTo) {
     const url = new URL(redirectTo, req.url);
@@ -83,8 +90,11 @@ function redirectOrJson(req: Request, redirectTo: string | undefined, payload: a
 
 // --- helper: who is platform / L3 here? ---
 async function actorIsPlatformAdmin(userId: string) {
-  const roles = await prisma.appRole.findMany({ where: { userId }, select: { role: true } });
-  const s = new Set(roles.map(r => r.role));
+  const roles = await prisma.appRole.findMany({
+    where: { userId },
+    select: { role: true },
+  });
+  const s = new Set(roles.map((r) => r.role));
   return s.has("DEVELOPER") || s.has("APP_ADMIN");
 }
 async function actorIsTenantAdmin(userId: string, tenantId: string) {
@@ -112,10 +122,14 @@ async function buildUniqueDeletedUsername(
   const reserve = 1 + 8; // "-" + date
   let core = baseUsername.trim();
   if (core.length + reserve > MAX) core = core.slice(0, MAX - reserve);
-
   let candidate = `${core}-${ISO}`;
   let n = 2;
-  while (await tx.user.findFirst({ where: { tenantId, username: candidate }, select: { id: true } })) {
+  while (
+    await tx.user.findFirst({
+      where: { tenantId, username: candidate },
+      select: { id: true },
+    })
+  ) {
     const extra = 1 + String(n).length; // "-" + digits
     const allowed = Math.max(1, MAX - reserve - extra);
     const c = core.length > allowed ? core.slice(0, allowed) : core;
@@ -131,19 +145,30 @@ export async function DELETE(
   req: Request,
   { params }: { params: { tenantId: string; userId: string } }
 ) {
-  // If you have a tenant module guard, uncomment and use it:
-  // await guardTenantModule(req, params, "settings");
+  // Keystone tenant guard (Settings)
+  const guard = await guardTenantModule(req, params, "settings");
+  if (guard) return guard;
 
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ true);
 }
 
 // ---------- PATCH/POST ----------
-export async function PATCH(req: Request, { params }: { params: { tenantId: string; userId: string } }) {
-  // await guardTenantModule(req, params, "settings");
+export async function PATCH(
+  req: Request,
+  { params }: { params: { tenantId: string; userId: string } }
+) {
+  const guard = await guardTenantModule(req, params, "settings");
+  if (guard) return guard;
+
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ false);
 }
-export async function POST(req: Request, { params }: { params: { tenantId: string; userId: string } }) {
-  // await guardTenantModule(req, params, "settings");
+export async function POST(
+  req: Request,
+  { params }: { params: { tenantId: string; userId: string } }
+) {
+  const guard = await guardTenantModule(req, params, "settings");
+  if (guard) return guard;
+
   return handleDeleteOrUpdate(req, params, /*forceDelete*/ false);
 }
 
@@ -153,7 +178,8 @@ async function handleDeleteOrUpdate(
   forceDelete: boolean
 ) {
   const { tenantId, userId } = params || {};
-  if (!tenantId || !userId) return NextResponse.json({ error: "tenantId and userId are required" }, { status: 400 });
+  if (!tenantId || !userId)
+    return NextResponse.json({ error: "tenantId and userId are required" }, { status: 400 });
 
   const actorUserId = await getCurrentUserId();
   if (!actorUserId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -162,8 +188,6 @@ async function handleDeleteOrUpdate(
     actorIsPlatformAdmin(actorUserId),
     actorIsTenantAdmin(actorUserId, tenantId),
   ]);
-  // Tenant Settings requires platform OR tenant admin
-  if (!isPlatform && !isL3Here) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const body = await readBody(req);
   const isDelete =
@@ -173,9 +197,14 @@ async function handleDeleteOrUpdate(
       ? ["1", "true", "on", "yes"].includes(body.delete.toLowerCase())
       : !!body.delete);
 
-  // L3 cannot delete themselves
+  // L3 cannot delete themselves (platform can)
   if (!isPlatform && isL3Here && isDelete && actorUserId === userId) {
-    return redirectOrJson(req, body.redirectTo, { error: "Tenant Admin cannot delete themselves" }, 400);
+    return redirectOrJson(
+      req,
+      body.redirectTo,
+      { error: "Tenant Admin cannot delete themselves" },
+      400
+    );
   }
 
   if (isDelete) {
@@ -190,18 +219,36 @@ async function handleDeleteOrUpdate(
           select: { id: true, role: true, isActive: true, deletedAt: true },
         }),
       ]);
-      if (!user || user.tenantId !== tenantId) return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
+      if (!user || user.tenantId !== tenantId)
+        return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
+
       if (!membership || membership.deletedAt) {
-        return redirectOrJson(req, body.redirectTo, { error: "membership not found or already deleted" }, 400);
+        return redirectOrJson(
+          req,
+          body.redirectTo,
+          { error: "membership not found or already deleted" },
+          400
+        );
       }
 
       // Guard: not the last active L3
       if (membership.role === TenantMemberRole.TENANT_ADMIN) {
         const others = await prisma.tenantMembership.count({
-          where: { tenantId, role: TenantMemberRole.TENANT_ADMIN, isActive: true, deletedAt: null, NOT: { userId } },
+          where: {
+            tenantId,
+            role: TenantMemberRole.TENANT_ADMIN,
+            isActive: true,
+            deletedAt: null,
+            NOT: { userId },
+          },
         });
         if (others === 0) {
-          return redirectOrJson(req, body.redirectTo, { error: "Cannot delete the last active Tenant Admin" }, 400);
+          return redirectOrJson(
+            req,
+            body.redirectTo,
+            { error: "Cannot delete the last active Tenant Admin" },
+            400
+          );
         }
       }
 
@@ -209,12 +256,24 @@ async function handleDeleteOrUpdate(
         const oldUsername = user.username;
         const newUsername = await buildUniqueDeletedUsername(tenantId, oldUsername, tx);
 
-        await tx.user.update({ where: { id: userId }, data: { username: newUsername }, select: { id: true } });
-        await tx.tenantMembership.updateMany({
-          where: { tenantId, userId, deletedAt: null },
-          data: { deletedAt: new Date(), deletedByUserId: actorUserId, isActive: false },
+        await tx.user.update({
+          where: { id: userId },
+          data: { username: newUsername },
+          select: { id: true },
         });
-        await tx.userEntitlement.deleteMany({ where: { tenantId, userId } });
+
+        await tx.tenantMembership.updateMany({
+          where: { tenantId, userId, deletedAt: null }, // ⬅️ ensure soft-delete only once
+          data: {
+            deletedAt: new Date(),
+            deletedByUserId: actorUserId,
+            isActive: false,
+          },
+        });
+
+        await tx.userEntitlement.deleteMany({
+          where: { tenantId, userId },
+        });
 
         await tx.auditLog.create({
           data: {
@@ -246,6 +305,6 @@ async function handleDeleteOrUpdate(
     }
   }
 
-  // (Optional: we can support PATCH role/status here too if needed, mirroring the admin route)
+  // (Optional PATCH support for role/status could go here.)
   return NextResponse.json({ ok: true }, { status: 200 });
 }
