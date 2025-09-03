@@ -3,11 +3,14 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole } from "@prisma/client";
-import { getActorLevel, assertCanCreateRole, type Level } from "@/lib/access";
-import { hashPassword } from "@/lib/auth";
+import {
+  getActorLevel,
+  type Level,
+  type TargetLevel,
+  canCreateUserWithRole,
+} from "@/lib/access";
 
-// --- Local dev hasher -------------------------------------------------------
-// TODO: Replace with your real password hasher (bcrypt/argon) when available.
+// --- Local dev hasher (Keystone note: replace with bcrypt/argon2 in auth lib) ---
 async function hashPasswordDev(password: string) {
   return password;
 }
@@ -15,15 +18,14 @@ async function hashPasswordDev(password: string) {
 export const dynamic = "force-dynamic";
 
 type CreateUserBody = {
-  name?: string;        // REQUIRED (server-side)
-  email?: string;       // OPTIONAL (schema requires non-null, we fill a unique placeholder when blank)
-  username?: string;    // REQUIRED
+  name?: string;        // REQUIRED (server-side validation)
+  email?: string;       // OPTIONAL; placeholder used if blank
+  username?: string;    // REQUIRED; normalized to slugish lowercase
   role?: "APP_ADMIN" | "TENANT_ADMIN" | "MANAGER" | "MEMBER";
-  redirectTo?: string;
+  redirectTo?: string;  // optional redirect after creation
 };
 
-// --- Helpers ---------------------------------------------------------------
-
+// ---------- Helpers ----------
 function normalizeEmail(v: unknown) {
   if (typeof v !== "string") return "";
   return v.trim().toLowerCase();
@@ -47,7 +49,9 @@ function normalizeUsername(v: unknown) {
     .slice(0, 30);
 }
 
-function isValidTenantRole(v: unknown): v is Exclude<CreateUserBody["role"], "APP_ADMIN"> {
+function isValidTenantRole(
+  v: unknown
+): v is Exclude<CreateUserBody["role"], "APP_ADMIN"> {
   return v === "TENANT_ADMIN" || v === "MANAGER" || v === "MEMBER";
 }
 
@@ -82,8 +86,7 @@ async function readBody(req: Request): Promise<CreateUserBody> {
   return (await req.json().catch(() => ({}))) as CreateUserBody;
 }
 
-// --- POST /api/admin/tenants/[tenantId]/users -----------------------------
-
+// ---------- POST /api/admin/tenants/[tenantId]/users ----------
 export async function POST(
   req: Request,
   { params }: { params: { tenantId: string } }
@@ -119,19 +122,29 @@ export async function POST(
     return NextResponse.json({ error: "username is required" }, { status: 400 });
   }
 
-  // Map role value to target level for centralized create guard
-  const requestedLevel =
+  // Map role value to TargetLevel for centralized create guard
+  const requestedLevel: TargetLevel | null =
     role === "APP_ADMIN"
-      ? ("L2" as const)
+      ? "L2"
       : isValidTenantRole(role)
-      ? (role === "TENANT_ADMIN" ? "L3" : role === "MANAGER" ? "L4" : "L5")
+      ? role === "TENANT_ADMIN"
+        ? "L3"
+        : role === "MANAGER"
+        ? "L4"
+        : "L5"
       : null;
 
-  // Enforce Pyramids create rule
-  try {
-    assertCanCreateRole({ actorLevel, requestedLevel });
-  } catch {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  // Keystone create guard — peer-block + matrix
+  const createDecision = await canCreateUserWithRole({
+    tenantId,
+    actorUserId,
+    requestedLevel,
+  });
+  if (!createDecision.allowed) {
+    return NextResponse.json(
+      { error: "forbidden", reason: createDecision.reason ?? "create.denied" },
+      { status: 403 }
+    );
   }
 
   try {
@@ -141,24 +154,32 @@ export async function POST(
       select: { id: true },
     });
     if (taken) {
-      return NextResponse.json({ error: "username already taken in this tenant" }, { status: 409 });
+      return NextResponse.json(
+        { error: "username already taken in this tenant" },
+        { status: 409 }
+      );
     }
 
-    // 2) If a real email is provided, check for an existing user by (tenantId,email)
+    // 2) Check existing by (tenantId,email) if a real email was provided
     const hasRealEmail = !!email && !/@(?:^|\.)local$/i.test(email);
     let user =
       hasRealEmail
         ? await prisma.user.findUnique({
             where: { tenantId_email: { tenantId, email } },
-            select: { id: true, email: true, name: true, username: true, createdAt: true },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              username: true,
+              createdAt: true,
+            },
           })
         : null;
 
-    // 3) Compute email to save
-    //    If blank, use a unique placeholder to satisfy @@unique([tenantId,email]).
+    // 3) Compute email to save (placeholder if blank)
     const emailToSave = hasRealEmail ? email : `${usernameRaw}@${tenantId}.local`;
 
-    // Default password = "123" (dev)
+    // Default password = "123" (dev stub)
     const defaultPasswordHash = await hashPasswordDev("123");
 
     if (!user) {
@@ -172,11 +193,19 @@ export async function POST(
             username: usernameRaw,
             passwordHash: defaultPasswordHash,
           },
-          select: { id: true, email: true, name: true, username: true, createdAt: true },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            username: true,
+            createdAt: true,
+          },
         });
       } catch (e: any) {
         if (e?.code === "P2002") {
-          const target = Array.isArray(e?.meta?.target) ? e.meta.target.join(",") : "unique field";
+          const target = Array.isArray(e?.meta?.target)
+            ? e.meta.target.join(",")
+            : "unique field";
           return NextResponse.json({ error: `conflict on ${target}` }, { status: 409 });
         }
         throw e;
@@ -191,11 +220,20 @@ export async function POST(
             username: usernameRaw,
             passwordHash: defaultPasswordHash,
           },
-          select: { id: true, email: true, name: true, username: true, createdAt: true },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            username: true,
+            createdAt: true,
+          },
         });
       } catch (e: any) {
         if (e?.code === "P2002") {
-          return NextResponse.json({ error: "username already taken in this tenant" }, { status: 409 });
+          return NextResponse.json(
+            { error: "username already taken in this tenant" },
+            { status: 409 }
+          );
         }
         throw e;
       }
@@ -203,10 +241,17 @@ export async function POST(
 
     // 4) Apply role
     let membership:
-      | { id: string; tenantId: string; userId: string; role: TenantMemberRole; isActive: boolean }
+      | {
+          id: string;
+          tenantId: string;
+          userId: string;
+          role: TenantMemberRole;
+          isActive: boolean;
+        }
       | null = null;
 
     if (role === "APP_ADMIN") {
+      // Platform role (L2)
       await prisma.appRole.upsert({
         where: { userId_role: { userId: user.id, role: "APP_ADMIN" } },
         update: {},
@@ -223,12 +268,29 @@ export async function POST(
         membership = await prisma.tenantMembership.update({
           where: { id: existingMembership.id },
           data: { role: roleEnum, isActive: true },
-          select: { id: true, tenantId: true, userId: true, role: true, isActive: true },
+          select: {
+            id: true,
+            tenantId: true,
+            userId: true,
+            role: true,
+            isActive: true,
+          },
         });
       } else {
         membership = await prisma.tenantMembership.create({
-          data: { tenantId, userId: user.id, role: roleEnum, isActive: true },
-          select: { id: true, tenantId: true, userId: true, role: true, isActive: true },
+          data: {
+            tenantId,
+            userId: user.id,
+            role: roleEnum,
+            isActive: true,
+          },
+          select: {
+            id: true,
+            tenantId: true,
+            userId: true,
+            role: true,
+            isActive: true,
+          },
         });
       }
     } else {
@@ -264,7 +326,7 @@ export async function POST(
 
     return NextResponse.json({ ok: true, user, membership }, { status: 201 });
   } catch (err) {
-    console.error("POST /tenants/[tenantId]/users error:", err);
+    console.error("POST /admin/tenants/[tenantId]/users error:", err);
     return NextResponse.json({ error: "failed to create user" }, { status: 500 });
   }
 }

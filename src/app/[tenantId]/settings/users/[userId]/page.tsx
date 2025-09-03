@@ -1,26 +1,56 @@
 // src/app/[tenantId]/settings/users/[userId]/page.tsx
+import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import Link from "next/link";
-import { Card, CardContent } from "@/components/ui/card";
-import ManageUserClient from "./ManageUserClient";
 import { getCurrentUserId } from "@/lib/current-user";
-import { getActorLevel, type Level } from "@/lib/access";
-
-export const dynamic = "force-dynamic";
+import ManageUserClient from "./ManageUserClient";
+import {
+  getActorLevel,
+  canManageUserGeneral,
+  getCreatableRolesFor,
+  type Level,
+} from "@/lib/access";
 
 type TenantRole = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
-function levelFromRole(role: TenantRole | null | undefined): Level | null {
-  switch (role) {
-    case "TENANT_ADMIN":
-      return "L3";
-    case "MANAGER":
-      return "L4";
-    case "MEMBER":
-      return "L5";
-    default:
-      return null;
-  }
+export const dynamic = "force-dynamic";
+
+function mapRoleToLevel(role: TenantRole | null | undefined): Level {
+  if (role === "TENANT_ADMIN") return "L3";
+  if (role === "MANAGER") return "L4";
+  return "L5";
+}
+
+function toTenantRoles(levels: Array<"L3" | "L4" | "L5">): TenantRole[] {
+  const out: TenantRole[] = [];
+  if (levels.includes("L3")) out.push("TENANT_ADMIN");
+  if (levels.includes("L4")) out.push("MANAGER");
+  if (levels.includes("L5")) out.push("MEMBER");
+  return out;
+}
+
+/**
+ * Compute UI-allowed role options from actor level and peer/self rules.
+ * Mirrors server policy:
+ * - L1 can assign L3/L4/L5 here (tenant UI).
+ * - L2 can assign L3/L4/L5.
+ * - L3 can assign L4/L5 only.
+ * - Only L1 may self-manage (role). Peer block: no same-level edits (except L1 self).
+ */
+function computeAllowedRolesUI(
+  actorLevel: Level | null,
+  targetLevel: Level | null,
+  isSelf: boolean
+): TenantRole[] {
+  if (!actorLevel || !targetLevel) return [];
+  if (isSelf && actorLevel !== "L1") return []; // only L1 may self-manage (role)
+  if (!isSelf && actorLevel === targetLevel) return []; // peer block
+
+  const creatable = getCreatableRolesFor(actorLevel);
+  const tenantTargets = creatable.filter(
+    (lv) => lv === "L3" || lv === "L4" || lv === "L5"
+  ) as Array<"L3" | "L4" | "L5">;
+
+  return toTenantRoles(tenantTargets);
 }
 
 export default async function ManageUserPage({
@@ -28,92 +58,66 @@ export default async function ManageUserPage({
 }: {
   params: { tenantId: string; userId: string };
 }) {
-  const { tenantId, userId } = params;
+  const { tenantId, userId: targetUserId } = params;
 
-  // Who is acting?
+  // Actor
   const actorUserId = await getCurrentUserId();
-  const actorLevel = actorUserId ? await getActorLevel(actorUserId, tenantId) : null;
+  if (!actorUserId) {
+    redirect(`/sign-in?redirectTo=/${tenantId}/settings/users/${targetUserId}`);
+  }
 
-  // Fetch user & membership within this tenant
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, name: true, username: true, email: true },
+  // Load target user (must exist in this tenant)
+  const target = await prisma.user.findFirst({
+    where: { id: targetUserId, tenantId },
+    select: { id: true, name: true, username: true },
   });
+  if (!target) notFound();
 
+  // Load membership directly (no relation on User type)
   const membership = await prisma.tenantMembership.findUnique({
-    where: { userId_tenantId: { userId, tenantId } },
-    select: { role: true, isActive: true },
+    where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
+    select: { role: true, isActive: true, deletedAt: true },
   });
 
-  if (!user || !membership) {
-    return (
-      <div className="p-6 space-y-4">
-        <div className="text-sm text-muted-foreground">User or membership not found.</div>
-        <Link href={`/${tenantId}/settings`} className="text-blue-600 hover:underline">
-          ← Back to Settings
-        </Link>
-      </div>
-    );
+  if (!membership || membership.deletedAt) {
+    notFound(); // soft-deleted or no membership
   }
 
-  const targetRole = membership.role as TenantRole;
-  const targetLevel = levelFromRole(targetRole);
-  const isSelf = actorUserId === userId;
+  const initialRole = (membership.role ?? "MEMBER") as TenantRole;
+  const initialActive = !!membership.isActive;
 
-  // Allowed role options for the actor (server-authoritative)
-  let allowedRoles: TenantRole[] = [];
-  if (actorLevel === "L1" || actorLevel === "L2") {
-    allowedRoles = ["TENANT_ADMIN", "MANAGER", "MEMBER"];
-  } else if (actorLevel === "L3") {
-    // L3 cannot assign/see TENANT_ADMIN
-    allowedRoles = ["MANAGER", "MEMBER"];
-  } else {
-    allowedRoles = [];
-  }
+  // Resolve levels + guard decisions
+  const [actorLevel, roleDecision, statusDecision, deleteDecision] =
+    await Promise.all([
+      getActorLevel(actorUserId!, tenantId), // L1–L5 or null
+      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "role" }),
+      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "status" }),
+      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "delete" }),
+    ]);
 
-  // Disable role change UI if actor cannot manage the target's current level or is self
-  const disableRoleChange =
-    isSelf ||
-    (actorLevel === "L3" && targetLevel === "L3") ||
-    (actorLevel === "L4" && (targetLevel === "L4" || targetLevel === "L3")) ||
-    actorLevel === null;
+  const isSelf = actorUserId === targetUserId;
+  const targetLevel = roleDecision.targetLevel ?? mapRoleToLevel(initialRole);
+
+  // UI permissions
+  const allowedRoles = computeAllowedRolesUI(actorLevel, targetLevel, isSelf);
+  const disableRoleChange = !roleDecision.allowed;
+  const canToggleStatus = statusDecision.allowed;
+  const canDeleteUser = deleteDecision.allowed;
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Manage user</h1>
-        <Link href={`/${tenantId}/settings`} className="text-blue-600 hover:underline">
-          ← Back to Settings
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <h1 className="text-xl font-semibold">Manage user</h1>
 
-      <Card className="rounded-2xl">
-        <CardContent className="p-6 space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <div className="text-xs uppercase text-muted-foreground mb-1">Name</div>
-              <div className="text-sm">{user.name || "—"}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase text-muted-foreground mb-1">Username</div>
-              <div className="text-sm">{user.username}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase text-muted-foreground mb-1">Email</div>
-              <div className="text-sm">{user.email || "—"}</div>
-            </div>
-          </div>
-
-          <ManageUserClient
-            tenantId={tenantId}
-            userId={userId}
-            initialRole={targetRole}
-            initialActive={membership.isActive}
-            allowedRoles={allowedRoles}
-            disableRoleChange={disableRoleChange}
-          />
-        </CardContent>
-      </Card>
+      <ManageUserClient
+        tenantId={tenantId}
+        userId={targetUserId}
+        initialRole={initialRole}
+        initialActive={initialActive}
+        allowedRoles={allowedRoles}
+        disableRoleChange={disableRoleChange}
+        canToggleStatus={canToggleStatus}
+        canDeleteUser={canDeleteUser}
+      />
     </div>
   );
 }

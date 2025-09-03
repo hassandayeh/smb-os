@@ -12,15 +12,12 @@ export default async function TenantSettingsUsersPage({
 }) {
   const { tenantId } = params;
 
-  // Keystone guard (ideally also at layout level)
+  // Keystone guard (ideally enforced again at /[tenantId]/settings layout)
   await ensureModuleAccessOrRedirect(tenantId, "settings");
 
   // ✅ Always exclude soft-deleted memberships
   const memberships = await prisma.tenantMembership.findMany({
-    where: {
-      tenantId,
-      deletedAt: null,
-    },
+    where: { tenantId, deletedAt: null },
     include: {
       user: {
         select: {
@@ -39,48 +36,46 @@ export default async function TenantSettingsUsersPage({
     <>
       <h1 className="mb-4 text-xl font-semibold">Workspace Settings — Users</h1>
 
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="min-w-full text-left text-sm">
-          <thead className="bg-muted/50 text-xs uppercase">
-            <tr>
-              <th className="px-3 py-2 font-medium">Name</th>
-              <th className="px-3 py-2 font-medium">Username</th>
-              <th className="px-3 py-2 font-medium">Role</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {memberships.map((m) => {
-              const u = m.user;
-              return (
-                <tr key={u.id} className="border-t">
-                  <td className="px-3 py-2">{u.name ?? "—"}</td>
-                  <td className="px-3 py-2">{u.username}</td>
-                  <td className="px-3 py-2">{m.role ?? "—"}</td>
-                  <td className="px-3 py-2">{m.isActive ? "Active" : "Inactive"}</td>
-                  <td className="px-3 py-2">
-                    <Link
-                      href={`/${tenantId}/settings/users/${u.id}`}
-                      className="text-primary underline-offset-2 hover:underline"
-                    >
-                      Manage
-                    </Link>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {memberships.length === 0 && (
-              <tr className="border-t">
-                <td className="px-3 py-8" colSpan={5}>
-                  No users found.
-                </td>
+      {memberships.length === 0 ? (
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+          No users found.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-left">
+              <tr>
+                <th className="px-3 py-2 font-medium">Name</th>
+                <th className="px-3 py-2 font-medium">Username</th>
+                <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {memberships.map((m) => {
+                const u = m.user;
+                return (
+                  <tr key={u.id} className="border-t">
+                    <td className="px-3 py-2">{u.name ?? "—"}</td>
+                    <td className="px-3 py-2">{u.username}</td>
+                    <td className="px-3 py-2">{m.role ?? "—"}</td>
+                    <td className="px-3 py-2">{m.isActive ? "Active" : "Inactive"}</td>
+                    <td className="px-3 py-2">
+                      <Link
+                        href={`/${tenantId}/settings/users/${u.id}`}
+                        className="underline"
+                      >
+                        Manage
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }

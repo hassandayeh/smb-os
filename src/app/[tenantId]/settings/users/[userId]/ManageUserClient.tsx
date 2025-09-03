@@ -7,16 +7,34 @@ import { Button } from "@/components/ui/button";
 
 type TenantRole = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
-export default function ManageUserClient(props: {
+type Props = {
   tenantId: string;
   userId: string;
+
+  /** Current values */
   initialRole: TenantRole;
   initialActive: boolean;
-  allowedRoles: TenantRole[];
-  disableRoleChange: boolean;
-}) {
-  const { tenantId, userId, initialRole, initialActive, allowedRoles, disableRoleChange } =
-    props;
+
+  /** Guard-driven UI constraints (server decides; UI respects) */
+  allowedRoles: TenantRole[];        // which roles can the actor set on this target
+  disableRoleChange: boolean;        // hard block role changes (peer/self rules already checked on server)
+
+  /** Optional: fine-grained disables for other actions (default false = allowed) */
+  canToggleStatus?: boolean;         // if false, the toggle is disabled (UI only; server still enforces)
+  canDeleteUser?: boolean;           // if false, delete is disabled (UI only; server still enforces)
+};
+
+export default function ManageUserClient(props: Props) {
+  const {
+    tenantId,
+    userId,
+    initialRole,
+    initialActive,
+    allowedRoles,
+    disableRoleChange,
+    canToggleStatus = true,
+    canDeleteUser = true,
+  } = props;
 
   const router = useRouter();
   const [role, setRole] = useState<TenantRole>(initialRole);
@@ -24,7 +42,7 @@ export default function ManageUserClient(props: {
   const [busy, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  // Keystone route base
+  // NOTE: Keeping your existing consolidated route as-is per golden rules.
   const apiBase = `/api/${tenantId}/settings/users/${userId}`;
 
   function patch(body: Record<string, unknown>) {
@@ -76,58 +94,74 @@ export default function ManageUserClient(props: {
     });
   }
 
+  const roleOptions: TenantRole[] = ["TENANT_ADMIN", "MANAGER", "MEMBER"];
+  const visibleRoleOptions = roleOptions.filter((r) => allowedRoles.includes(r));
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* Status */}
       <section className="rounded-2xl border p-4">
-        <h3 className="mb-1 text-sm font-medium">Status</h3>
-        <p className="mb-3 text-sm text-muted-foreground">
+        <h3 className="mb-1 text-base font-semibold">Status</h3>
+        <p className="mb-4 text-sm text-muted-foreground">
           {isActive ? "Active" : "Inactive"} — toggle to {isActive ? "deactivate" : "activate"} this user
         </p>
+
         <label className="inline-flex items-center gap-2">
           <input
             type="checkbox"
-            className="h-4 w-4"
             checked={isActive}
             onChange={onToggleActive}
-            disabled={busy}
+            disabled={busy || !canToggleStatus}
           />
-          <span>{isActive ? "On" : "Off"}</span>
+          <span className="text-sm">{isActive ? "On" : "Off"}</span>
         </label>
       </section>
 
       {/* Role */}
       <section className="rounded-2xl border p-4">
-        <h3 className="mb-1 text-sm font-medium">Role</h3>
-        <p className="mb-3 text-sm text-muted-foreground">Changes save automatically</p>
-        <select
-          className="min-w-[12rem] rounded-md border px-2 py-1"
-          value={role}
-          onChange={onRoleChange}
-          disabled={disableRoleChange || busy}
-        >
-          {allowedRoles.includes("TENANT_ADMIN") && <option value="TENANT_ADMIN">Tenant Admin</option>}
-          {allowedRoles.includes("MANAGER") && <option value="MANAGER">Manager</option>}
-          {allowedRoles.includes("MEMBER") && <option value="MEMBER">Member</option>}
-        </select>
+        <h3 className="mb-1 text-base font-semibold">Role</h3>
+        <p className="mb-4 text-sm text-muted-foreground">Changes save automatically</p>
+
+        <div className="flex items-center gap-3">
+          <select
+            value={role}
+            onChange={onRoleChange}
+            disabled={busy || disableRoleChange || visibleRoleOptions.length === 0}
+            className="min-w-[12rem]"
+          >
+            {visibleRoleOptions.map((r) => (
+              <option key={r} value={r}>
+                {r === "TENANT_ADMIN" ? "Tenant Admin" : r === "MANAGER" ? "Manager" : "Member"}
+              </option>
+            ))}
+          </select>
+          {visibleRoleOptions.length === 0 && (
+            <span className="text-xs text-muted-foreground">You can’t change this user’s role.</span>
+          )}
+        </div>
       </section>
 
       {/* Danger zone */}
       <section className="rounded-2xl border p-4">
-        <h3 className="mb-1 text-sm font-medium">Delete user</h3>
-        <p className="mb-3 text-sm text-muted-foreground">
+        <h3 className="mb-1 text-base font-semibold text-red-600">Delete user</h3>
+        <p className="mb-4 text-sm text-muted-foreground">
           Soft delete only: membership is marked deleted and hidden from lists.
         </p>
-        <Button variant="destructive" onClick={onDelete} disabled={busy}>
+
+        <Button
+          variant="destructive"
+          onClick={onDelete}
+          disabled={busy || !canDeleteUser}
+        >
           Delete
         </Button>
-      </section>
 
-      {error && (
-        <p className="rounded-md border p-3 text-sm text-destructive">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="mt-4 text-sm text-red-600" role="alert">
+            {error}
+          </p>
+        )}
+      </section>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+// src/lib/access.ts
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -13,9 +14,8 @@ import { getCurrentUserId } from "@/lib/current-user";
  *    - L4/L5 (MANAGER/MEMBER): allowed only if UserEntitlement(userId, T, M) == ON
  *
  * NOTE: We keep this helper self-contained and side-effect free.
- *       Admin editing screens will keep their own checks; this is for feature access in tenant space.
+ * Admin editing screens will keep their own checks; this is for feature access in tenant space.
  */
-
 type PlatformRole = "DEVELOPER" | "APP_ADMIN";
 type TenantMemberRole = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
@@ -68,13 +68,11 @@ export async function hasModuleAccess(params: {
     where: { userId_tenantId: { userId, tenantId } },
     select: { role: true, isActive: true },
   });
-
   if (!membership || !membership.isActive) {
     return { allowed: false, reason: "NO_MEMBERSHIP" };
   }
 
   const role = membership.role as TenantMemberRole;
-
   if (role === "TENANT_ADMIN") {
     return { allowed: true, reason: "TENANT_ADMIN" };
   }
@@ -84,16 +82,13 @@ export async function hasModuleAccess(params: {
     where: { userId_tenantId_moduleKey: { userId, tenantId, moduleKey } },
     select: { isEnabled: true },
   });
-
   if (ue?.isEnabled) {
     return { allowed: true, reason: "USER_ENTITLEMENT_ON" };
   }
-
   // Distinguish between missing user rule and explicit OFF
   if (ue == null) {
     return { allowed: false, reason: "NO_USER_RULE" };
   }
-
   return { allowed: false, reason: "USER_ENTITLEMENT_OFF" };
 }
 
@@ -137,9 +132,8 @@ export async function ensureModuleAccessOrRedirect(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                       CENTRALIZED PYRAMIDS ROLE LOGIC                       */
+/* CENTRALIZED PYRAMIDS ROLE LOGIC */
 /* -------------------------------------------------------------------------- */
-
 export type Level = "L1" | "L2" | "L3" | "L4" | "L5";
 export type TargetLevel = Exclude<Level, "L1">; // cannot create L1
 
@@ -148,10 +142,13 @@ export type TargetLevel = Exclude<Level, "L1">; // cannot create L1
  * - L1 if the user has platform role DEVELOPER
  * - L2 if the user has platform role APP_ADMIN
  * - Else based on tenant membership:
- *    TENANT_ADMIN → L3, MANAGER → L4, MEMBER → L5
+ *   TENANT_ADMIN → L3, MANAGER → L4, MEMBER → L5
  * - Returns null if no platform role and no membership in tenant.
  */
-export async function getActorLevel(userId: string, tenantId: string): Promise<Level | null> {
+export async function getActorLevel(
+  userId: string,
+  tenantId: string
+): Promise<Level | null> {
   // Platform roles take precedence (L1/L2)
   const platform = await prisma.appRole.findMany({
     where: { userId },
@@ -182,11 +179,11 @@ export async function getActorLevel(userId: string, tenantId: string): Promise<L
 /**
  * Allowed creation targets for each actor level.
  * Project Pyramids rule:
- *   L1 → L2, L3, L4, L5
- *   L2 → L3, L4, L5
- *   L3 → L4, L5
- *   L4 → L5
- *   L5 → (none)
+ * L1 → L2, L3, L4, L5
+ * L2 → L3, L4, L5
+ * L3 → L4, L5
+ * L4 → L5
+ * L5 → (none)
  */
 export function getCreatableRolesFor(level: Level | null): TargetLevel[] {
   switch (level) {
@@ -221,21 +218,16 @@ export function canManageUser(params: {
   const { actorLevel, targetLevel, allowSelf = false, isSelf = false } = params;
   if (!actorLevel || !targetLevel) return false;
   if (isSelf && !allowSelf) return false;
-
   if (actorLevel === "L1") return true;
-
   if (actorLevel === "L2") {
     return targetLevel === "L3" || targetLevel === "L4" || targetLevel === "L5";
   }
-
   if (actorLevel === "L3") {
     return targetLevel === "L4" || targetLevel === "L5";
   }
-
   if (actorLevel === "L4") {
     return targetLevel === "L5";
   }
-
   return false;
 }
 
@@ -248,7 +240,9 @@ export function assertCanCreateRole(params: {
   requestedLevel: TargetLevel | null;
 }) {
   const { actorLevel, requestedLevel } = params;
-  const allowed = getCreatableRolesFor(actorLevel).includes((requestedLevel ?? "") as TargetLevel);
+  const allowed = getCreatableRolesFor(actorLevel).includes(
+    (requestedLevel ?? "") as TargetLevel
+  );
   if (!allowed) {
     const error = new Error("Forbidden (role.create.not_allowed)");
     // @ts-expect-error status tag for routes
@@ -258,9 +252,8 @@ export function assertCanCreateRole(params: {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                  NEW: Platform Admin (non-tenant) guard                     */
+/* NEW: Platform Admin (non-tenant) guard */
 /* -------------------------------------------------------------------------- */
-
 /**
  * For ADMIN area pages/layouts (non-tenant context).
  * Allows only platform staff (L1/L2). Throws 403 otherwise.
@@ -273,7 +266,6 @@ export async function requireAdminAccess(userId?: string | null) {
     err.status = 403;
     throw err;
   }
-
   // Reuse central level resolution; tenantId is irrelevant for platform roles.
   const level = await getActorLevel(userId, "platform");
   if (level === "L1" || level === "L2") return true;
@@ -285,15 +277,16 @@ export async function requireAdminAccess(userId?: string | null) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*             NEW: Settings (control plane) guard for L1/L2/L3               */
+/* NEW: Settings (control plane) guard for L1/L2/L3 */
 /* -------------------------------------------------------------------------- */
-
 /**
  * Settings is a tenant control surface, not a feature module.
  * It should be accessible to L1/L2 (platform) and L3 (tenant admin),
  * without requiring a tenant entitlement switch.
  */
-export async function ensureL3SettingsAccessOrRedirect(tenantId: string): Promise<void> {
+export async function ensureL3SettingsAccessOrRedirect(
+  tenantId: string
+): Promise<void> {
   const userId = await getCurrentUserId();
   if (!userId) {
     redirect("/forbidden?reason=AUTH");
@@ -305,9 +298,11 @@ export async function ensureL3SettingsAccessOrRedirect(tenantId: string): Promis
   redirect("/forbidden?reason=SETTINGS_NOT_ALLOWED");
 }
 
-
 // API helper: throws 403 instead of redirecting (for route handlers)
-export async function requireL3SettingsAccess(tenantId: string, userId: string | null | undefined) {
+export async function requireL3SettingsAccess(
+  tenantId: string,
+  userId: string | null | undefined
+) {
   if (!userId) {
     const err = new Error("Forbidden (AUTH)");
     // @ts-expect-error tag for route handlers
@@ -323,7 +318,9 @@ export async function requireL3SettingsAccess(tenantId: string, userId: string |
   throw err;
 }
 
-// --- Centralized delete guard (Keystone) ---
+/* -------------------------------------------------------------------------- */
+/* EXISTING: Centralized delete guard (Keystone) */
+/* -------------------------------------------------------------------------- */
 export async function canDeleteUser(params: {
   tenantId: string;
   actorUserId: string;
@@ -350,7 +347,6 @@ export async function canDeleteUser(params: {
     | "MANAGER"
     | "MEMBER";
   const targetLevel = role === "TENANT_ADMIN" ? "L3" : role === "MANAGER" ? "L4" : "L5";
-
   const isSelf = actorUserId === targetUserId;
 
   // L1/L2 manage all (including L3), self-management still blocked by default
@@ -366,10 +362,102 @@ export async function canDeleteUser(params: {
     isSelf,
     // leave allowSelf=false (explicit)
   });
-
   if (!allowed) {
     return { allowed: false, reason: "L3.can_only_manage_L4_L5_or_forbidden" };
   }
-
   return { allowed: true };
+}
+
+/* -------------------------------------------------------------------------- */
+/* NEW: Self-management + Peer-blocking (General) */
+/* -------------------------------------------------------------------------- */
+
+/** Intent categories we might treat differently later (fine-grained audit/policy). */
+export type ManageIntent = "view" | "edit" | "status" | "role" | "delete";
+
+/**
+ * canManageUserGeneral:
+ * - Blocks self-delete for everyone.
+ * - Only L1 may self-manage (view/edit/status/role). L1 self-delete still blocked.
+ * - Peer-blocking: no same-level management (including L1→L1), except L1 self-manage.
+ * - Then applies the existing hierarchical rules via canManageUser().
+ */
+export async function canManageUserGeneral(params: {
+  tenantId: string;
+  actorUserId: string;
+  targetUserId: string;
+  intent: ManageIntent;
+}): Promise<{ allowed: boolean; reason?: string; actorLevel?: Level | null; targetLevel?: Level | null }> {
+  const { tenantId, actorUserId, targetUserId, intent } = params;
+
+  const [actorLevel, targetMembership] = await Promise.all([
+    getActorLevel(actorUserId, tenantId),
+    prisma.tenantMembership.findUnique({
+      where: { userId_tenantId: { userId: targetUserId, tenantId } },
+      select: { role: true, isActive: true, deletedAt: true },
+    }),
+  ]);
+
+  if (!actorLevel) return { allowed: false, reason: "actor.level.unknown", actorLevel: null, targetLevel: null };
+  if (!targetMembership || !!targetMembership.deletedAt)
+    return { allowed: false, reason: "target.not_found_or_deleted", actorLevel, targetLevel: null };
+
+  const targetRole = (targetMembership.role ?? "MEMBER") as TenantMemberRole;
+  const targetLevel: Level = targetRole === "TENANT_ADMIN" ? "L3" : targetRole === "MANAGER" ? "L4" : "L5";
+  const isSelf = actorUserId === targetUserId;
+
+  // 1) No self-delete for anyone
+  if (intent === "delete" && isSelf) {
+    return { allowed: false, reason: "self.delete.forbidden", actorLevel, targetLevel };
+  }
+
+  // 2) Only L1 may self-manage (but still cannot self-delete)
+  if (isSelf && actorLevel !== "L1") {
+    return { allowed: false, reason: "self.manage.forbidden", actorLevel, targetLevel };
+  }
+
+  // 3) Peer-blocking (no same-level management), except L1 self-manage
+  if (!isSelf && actorLevel === targetLevel) {
+    return { allowed: false, reason: "peer.manage.forbidden", actorLevel, targetLevel };
+  }
+
+  // 4) Hierarchical rule (existing canManageUser). Self allowed only if L1 & not delete.
+  const allowed = canManageUser({
+    actorLevel,
+    targetLevel,
+    allowSelf: isSelf && actorLevel === "L1" && intent !== "delete",
+    isSelf,
+  });
+
+  return allowed
+    ? { allowed: true, actorLevel, targetLevel }
+    : { allowed: false, reason: "hierarchy.forbidden", actorLevel, targetLevel };
+}
+
+/* -------------------------------------------------------------------------- */
+/* NEW: Create guard with peer-blocking */
+/* -------------------------------------------------------------------------- */
+export async function canCreateUserWithRole(params: {
+  tenantId: string;
+  actorUserId: string;
+  requestedLevel: TargetLevel | null;
+}): Promise<{ allowed: boolean; reason?: string; actorLevel?: Level | null }> {
+  const { tenantId, actorUserId, requestedLevel } = params;
+
+  const actorLevel = await getActorLevel(actorUserId, tenantId);
+  if (!actorLevel) return { allowed: false, reason: "actor.level.unknown", actorLevel: null };
+  if (!requestedLevel) return { allowed: false, reason: "requested.level.unknown", actorLevel };
+
+  // Peer-block: requested level must not equal actor level
+  if (requestedLevel === actorLevel) {
+    return { allowed: false, reason: "peer.create.forbidden", actorLevel };
+  }
+
+  // Reuse centralized matrix
+  const allowed = getCreatableRolesFor(actorLevel).includes(requestedLevel);
+  if (!allowed) {
+    return { allowed: false, reason: "matrix.create.forbidden", actorLevel };
+  }
+
+  return { allowed: true, actorLevel };
 }
