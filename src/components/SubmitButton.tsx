@@ -2,24 +2,32 @@
 
 import { useFormStatus } from "react-dom";
 import { ReactNode } from "react";
+import { Button, type ButtonProps } from "@/components/ui/button";
 
 export default function SubmitButton({
   children,
   pendingLabel = "Saving…",
   className = "",
+  variant,
+  size,
 }: {
   children: ReactNode;
   pendingLabel?: string;
   className?: string;
+  variant?: ButtonProps["variant"];
+  size?: ButtonProps["size"];
 }) {
   const { pending } = useFormStatus();
   return (
-    <button
+    <Button
       type="submit"
+      className={className}
+      variant={variant}
+      size={size}
       disabled={pending}
-      className={`rounded-md bg-black px-4 py-2 text-white hover:opacity-90 disabled:opacity-60 ${className}`}
+      aria-busy={pending || undefined}
     >
       {pending ? pendingLabel : children}
-    </button>
+    </Button>
   );
 }

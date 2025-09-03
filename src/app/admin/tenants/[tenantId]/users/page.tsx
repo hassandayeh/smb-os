@@ -33,11 +33,19 @@ function TenantRolePill({
       : role === "MANAGER"
       ? "Manager (L4)"
       : "Member (L5)";
+
   return (
     <span className="mr-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
       {label}
     </span>
   );
+}
+
+/** Safely append a query param to any URL, handling ? vs &. */
+function appendQuery(base: string, key: string, value: string | number) {
+  return `${base}${base.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(
+    String(value)
+  )}`;
 }
 
 export default async function TenantUsersPage({
@@ -84,7 +92,9 @@ export default async function TenantUsersPage({
 
   // Build user list helpers
   const userIds = users.map((u) => u.id);
-  const nameMap = new Map(users.map((u) => [u.id, u.name || u.email || u.id]));
+  const nameMap = new Map(
+    users.map((u) => [u.id, u.name || u.email || u.id])
+  );
 
   // Per-user entitlements (only for our module set)
   const userEnts = userIds.length
@@ -117,10 +127,9 @@ export default async function TenantUsersPage({
     if (row) row[e.moduleKey as (typeof MODULE_KEYS)[number]] = e.isEnabled;
   }
 
-  // Tenant memberships (L3/L4/L5) — include supervisorId
+  // Tenant memberships (L3/L4/L5) — include supervisorId and exclude soft-deleted
   const memberships = userIds.length
     ? await prisma.tenantMembership.findMany({
-        // EXCLUDE soft-deleted memberships from lookups
         where: { tenantId, userId: { in: userIds }, deletedAt: null, isActive: true },
         select: { userId: true, role: true, supervisorId: true },
       })
@@ -152,6 +161,7 @@ export default async function TenantUsersPage({
     });
     const rset = new Set(roles.map((r) => r.role));
     isPlatform = rset.has("DEVELOPER") || rset.has("APP_ADMIN");
+
     const m = await prisma.tenantMembership.findFirst({
       // ignore soft-deleted rows for actor’s membership
       where: { tenantId, userId: actorUserId, deletedAt: null, isActive: true },
@@ -172,7 +182,9 @@ export default async function TenantUsersPage({
   const backToTenantHref = qsStr
     ? `/admin/tenants/${tenantId}?${qsStr}`
     : `/admin/tenants/${tenantId}`;
-  const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : `/admin/tenants`;
+  const backToListHref = qsStr
+    ? `/admin/tenants?${qsStr}`
+    : `/admin/tenants`;
   const currentUrl = qsStr
     ? `/admin/tenants/${tenantId}/users?${qsStr}`
     : `/admin/tenants/${tenantId}/users`;
@@ -185,134 +197,148 @@ export default async function TenantUsersPage({
   return (
     <>
       {/* Header */}
-      <h1 className="mb-2 text-xl font-semibold">Users</h1>
-      <p className="mb-4 text-sm text-muted-foreground">
-        Tenant: {tenant?.name ?? tenantId}
-      </p>
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold">Users</h1>
+        <div className="mt-1 text-sm text-muted-foreground">
+          Tenant: <span className="font-medium">{tenant?.name ?? tenantId}</span>
+        </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3 text-sm">
-        <Link href="/admin">Admin Console</Link>
-        <span>•</span>
-        <Link href={backToListHref}>Back to list</Link>
-        <span>•</span>
-        <Link href={backToTenantHref}>Manage Tenant</Link>
+        <div className="mt-3 flex gap-4 text-sm">
+          <Link href="/admin/tenants" className="text-primary hover:underline">
+            Admin Console
+          </Link>
+          <span className="text-muted-foreground">•</span>
+          <Link href={backToListHref} className="text-primary hover:underline">
+            Back to list
+          </Link>
+          <span className="text-muted-foreground">•</span>
+          <Link
+            href={backToTenantHref}
+            className="text-primary hover:underline"
+          >
+            Manage Tenant
+          </Link>
+        </div>
       </div>
 
-      {/* Existing inline create form, table, etc. (unchanged logic) */}
-      {/* …the entire original content stays as-is… */}
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted/50 text-left">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Name</th>
+                  <th className="px-4 py-3 font-medium">Email</th>
+                  <th className="px-4 py-3 font-medium">
+                    {isPlatformTenant ? "Platform role" : "Tenant role"}
+                  </th>
+                  <th className="px-4 py-3 font-medium">Supervisor</th>
+                  <th className="px-4 py-3 font-medium">Created</th>
+                  <th className="px-4 py-3 font-medium">Access</th>
+                  <th className="px-4 py-3 font-medium">Actions</th>
+                </tr>
+              </thead>
 
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-left">
-            <tr>
-              <th className="px-3 py-2 font-medium">Name</th>
-              <th className="px-3 py-2 font-medium">Email</th>
-              <th className="px-3 py-2 font-medium">
-                {isPlatformTenant ? "Platform role" : "Tenant role"}
-              </th>
-              <th className="px-3 py-2 font-medium">Supervisor</th>
-              <th className="px-3 py-2 font-medium">Created</th>
-              <th className="px-3 py-2 font-medium">Access</th>
-              <th className="px-3 py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {users.length === 0 ? (
-              <tr>
-                <td className="px-3 py-6" colSpan={7}>
-                  No users yet.
-                </td>
-              </tr>
-            ) : (
-              users.map((u) => {
-                const row = entMap.get(u.id)!;
-                const onCount = (Object.keys(row) as (typeof MODULE_KEYS)[number][])
-                  .reduce((n, mk) => n + (row[mk] === true ? 1 : 0), 0);
-                const total = MODULE_KEYS.length;
-
-                const tenantRole = membershipMap.get(u.id) ?? null;
-                const currentSupervisorId = supervisorMap.get(u.id) ?? null;
-                const currentSupervisorName = currentSupervisorId
-                  ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
-                  : null;
-
-                const canEditRole =
-                  !isPlatformTenant &&
-                  (isPlatform || (actorIsL3Here && u.id !== actorUserId));
-                const roleOptions = roleOptionsForActor(isPlatform);
-
-                const canEditSupervisor =
-                  !isPlatformTenant &&
-                  (isPlatform || actorIsL3Here) &&
-                  tenantRole === "MEMBER";
-
-                const hideManage =
-                  !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
-
-                // Compute preview URL the same way your page currently does
-                const previewHref = `${currentUrl}&preview=${u.id}`;
-                const manageHref = `/admin/tenants/${tenantId}/users`; // placeholder anchor for asChild; preserves current navigation
-
-                return (
-                  <tr key={u.id} className="border-t">
-                    <td className="px-3 py-2">{u.name ?? "—"}</td>
-                    <td className="px-3 py-2">{u.email ?? "—"}</td>
-                    <td className="px-3 py-2">
-                      {isPlatformTenant ? (
-                        // Platform roles already rendered elsewhere in your original file
-                        <span className="text-muted-foreground">—</span>
-                      ) : tenantRole ? (
-                        <TenantRolePill role={tenantRole} />
-                      ) : (
-                        "—"
-                      )}
-
-                      {/* (Role edit controls remain unchanged in your original file) */}
-                    </td>
-
-                    <td className="px-3 py-2">
-                      {/* (Supervisor view/edit UI remains unchanged) */}
-                      {isPlatformTenant
-                        ? "—"
-                        : tenantRole === "MEMBER"
-                        ? currentSupervisorId
-                          ? `Supervisor: ${currentSupervisorName}`
-                          : "None"
-                        : "—"}
-                    </td>
-
-                    <td className="px-3 py-2">{fmtDate(u.createdAt)}</td>
-                    <td className="px-3 py-2">
-                      {onCount} / {total}
-                    </td>
-
-                    {/* ACTIONS — styled via shadcn Button, theme tokens only */}
-                    <td className="px-3 py-2">
-                      <div className="flex gap-2">
-                        <Button asChild size="sm" variant="secondary">
-                          <Link href={previewHref}>Preview as</Link>
-                        </Button>
-
-                        {!(!isPlatformTenant && hideManage) && (
-                          <Button asChild size="sm">
-                            {/* keep your existing manage link target if different */}
-                            <Link href={manageHref}>Manage</Link>
-                          </Button>
-                        )}
-                      </div>
+              <tbody>
+                {users.length === 0 ? (
+                  <tr>
+                    <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
+                      No users yet.
                     </td>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                ) : (
+                  users.map((u) => {
+                    const row = entMap.get(u.id)!;
+                    const onCount = (
+                      Object.keys(row) as (typeof MODULE_KEYS)[number][]
+                    ).reduce((n, mk) => n + (row[mk] === true ? 1 : 0), 0);
+                    const total = MODULE_KEYS.length;
 
-      {/* Clear Preview shortcut (unchanged) */}
+                    const tenantRole = membershipMap.get(u.id) ?? null;
+                    const currentSupervisorId =
+                      supervisorMap.get(u.id) ?? null;
+                    const currentSupervisorName = currentSupervisorId
+                      ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
+                      : null;
+
+                    const canEditRole =
+                      !isPlatformTenant &&
+                      (isPlatform || (actorIsL3Here && u.id !== actorUserId));
+                    const roleOptions = roleOptionsForActor(isPlatform);
+
+                    const canEditSupervisor =
+                      !isPlatformTenant &&
+                      (isPlatform || actorIsL3Here) &&
+                      tenantRole === "MEMBER";
+
+                    const hideManage =
+                      !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
+
+                    // Build links safely
+                    const previewHref = appendQuery(currentUrl, "preview", u.id);
+                    const clearHref = appendQuery(currentUrl, "clearPreview", 1);
+                    // Admin list → tenant-side Manage screen (existing surface)
+                    const manageHref = `/${tenantId}/settings/users/${u.id}`;
+
+                    return (
+                      <tr key={u.id} className="border-t border-border">
+                        <td className="px-4 py-3">{u.name ?? "—"}</td>
+                        <td className="px-4 py-3">{u.email ?? "—"}</td>
+
+                        <td className="px-4 py-3">
+                          {isPlatformTenant ? (
+                            // Platform roles can be shown elsewhere; keep as em dash here
+                            "—"
+                          ) : tenantRole ? (
+                            <TenantRolePill role={tenantRole} />
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+
+                        <td className="px-4 py-3">
+                          {isPlatformTenant
+                            ? "—"
+                            : tenantRole === "MEMBER"
+                            ? currentSupervisorId
+                              ? `Supervisor: ${currentSupervisorName}`
+                              : "None"
+                            : "—"}
+                        </td>
+
+                        <td className="px-4 py-3">{fmtDate(u.createdAt)}</td>
+
+                        <td className="px-4 py-3">
+                          {onCount} / {total}
+                        </td>
+
+                        <td className="px-4 py-3">
+                          <div className="flex gap-2">
+                            <Button asChild variant="secondary" size="sm">
+                              <Link href={previewHref}>Preview as</Link>
+                            </Button>
+
+                            {!(!isPlatformTenant && hideManage) && (
+                              <Button asChild size="sm">
+                                <Link href={manageHref}>Manage</Link>
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Clear Preview */}
       <div className="mt-4">
-        <Link className="underline" href={`${currentUrl}&preview=`}>
+        <Link href={appendQuery(currentUrl, "clearPreview", 1)}>
           Clear preview
         </Link>
       </div>
