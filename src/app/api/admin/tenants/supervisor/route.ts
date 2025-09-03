@@ -1,9 +1,9 @@
 // src/app/api/admin/tenants/supervisor/route.ts
 export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/auth";
+import { writeAudit } from "@/lib/audit";
 
 function getRedirectTarget(req: Request, fallbackTenantId?: string) {
   const url = new URL(req.url);
@@ -62,6 +62,7 @@ export async function POST(req: Request) {
       select: { role: true },
     }),
   ]);
+
   const actorIsDev = actorAppRoles.some((r) => r.role === "DEVELOPER");
   const actorIsAppAdmin = actorAppRoles.some((r) => r.role === "APP_ADMIN");
   const actorIsPlatform = actorIsDev || actorIsAppAdmin;
@@ -77,7 +78,7 @@ export async function POST(req: Request) {
   // Target membership must exist and be MEMBER in this tenant
   const targetM = await prisma.tenantMembership.findFirst({
     where: { tenantId, userId, isActive: true },
-    select: { id: true, role: true },
+    select: { id: true, role: true, supervisorId: true },
   });
   if (!targetM) {
     return NextResponse.json({ error: "User is not a member of this tenant" }, { status: 400 });
@@ -92,20 +93,38 @@ export async function POST(req: Request) {
       where: { id: targetM.id },
       data: { supervisorId: null },
     });
-    return NextResponse.redirect(new URL(getRedirectTarget(req, tenantId), req.url), { status: 303 });
+
+    // Audit
+    await writeAudit({
+      tenantId,
+      actorUserId: actorId,
+      action: "user.supervisor.unset",
+      req,
+      meta: {
+        targetUserId: userId,
+        before: { supervisorId: targetM.supervisorId ?? null },
+        after: { supervisorId: null },
+      },
+    });
+
+    return NextResponse.redirect(new URL(getRedirectTarget(req, tenantId), req.url), {
+      status: 303,
+    });
   }
 
   // Validate supervisor is a MANAGER in the same tenant and not the same user
   if (supervisorId === userId) {
     return NextResponse.json({ error: "User cannot supervise themselves" }, { status: 400 });
   }
-
   const supM = await prisma.tenantMembership.findFirst({
     where: { tenantId, userId: supervisorId, isActive: true },
     select: { id: true, role: true },
   });
   if (!supM || supM.role !== "MANAGER") {
-    return NextResponse.json({ error: "Supervisor must be a Manager (L4) in this tenant" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Supervisor must be a Manager (L4) in this tenant" },
+      { status: 400 }
+    );
   }
 
   // Apply mapping
@@ -114,7 +133,23 @@ export async function POST(req: Request) {
     data: { supervisorId },
   });
 
-  return NextResponse.redirect(new URL(getRedirectTarget(req, tenantId), req.url), { status: 303 });
+  // Audit
+  await writeAudit({
+    tenantId,
+    actorUserId: actorId,
+    action: "user.supervisor.set",
+    req,
+    meta: {
+      targetUserId: userId,
+      before: { supervisorId: targetM.supervisorId ?? null },
+      after: { supervisorId },
+      supervisorUserId: supervisorId,
+    },
+  });
+
+  return NextResponse.redirect(new URL(getRedirectTarget(req, tenantId), req.url), {
+    status: 303,
+  });
 }
 
 export async function GET() {

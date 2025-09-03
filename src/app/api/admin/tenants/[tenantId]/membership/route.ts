@@ -1,10 +1,10 @@
 // src/app/api/admin/tenants/[tenantId]/membership/route.ts
 export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/auth";
 import { canManageUserGeneral } from "@/lib/access";
+import { writeAudit } from "@/lib/audit";
 
 type Role = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
@@ -17,12 +17,8 @@ function getRedirectTarget(req: Request, tenantId: string) {
 
 async function parseBody(
   req: Request
-): Promise<{
-  userId: string;
-  role: Role | "";
-}> {
+): Promise<{ userId: string; role: Role | "" }> {
   const ct = req.headers.get("content-type") || "";
-
   if (ct.includes("application/x-www-form-urlencoded")) {
     const form = await req.formData();
     return {
@@ -30,7 +26,6 @@ async function parseBody(
       role: String(form.get("role") ?? "").toUpperCase() as Role | "",
     };
   }
-
   if (ct.includes("application/json")) {
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     return {
@@ -38,13 +33,13 @@ async function parseBody(
       role: String(b.role ?? "").toUpperCase() as Role | "",
     };
   }
-
   return { userId: "", role: "" };
 }
 
 /**
  * POST /api/admin/tenants/[tenantId]/membership
  * Updates a user's TenantMembership role within a tenant.
+ *
  * Keystone rules applied via canManageUserGeneral(..., intent: "role"):
  * - Only L1 may self-manage (still cannot self-delete; delete handled elsewhere).
  * - No peer management (same-level edits blocked).
@@ -57,7 +52,6 @@ export async function POST(
 ) {
   const tenantId = params.tenantId;
   const actorId = await getSessionUserId();
-
   if (!actorId) {
     return NextResponse.redirect(
       new URL(`/sign-in?redirectTo=/admin/tenants/${tenantId}/users`, req.url),
@@ -66,7 +60,6 @@ export async function POST(
   }
 
   const { userId: targetUserId, role } = await parseBody(req);
-
   if (
     !targetUserId ||
     !role ||
@@ -119,16 +112,13 @@ export async function POST(
   }
 
   // If demoting from TENANT_ADMIN to MANAGER/MEMBER, prevent removing the last active L3.
+  const previous = await prisma.tenantMembership.findUnique({
+    where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
+    select: { role: true, isActive: true },
+  });
+
   if (role !== "TENANT_ADMIN") {
-    // Identify if target is currently L3
-    const targetMembership = await prisma.tenantMembership.findUnique({
-      where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
-      select: { role: true, isActive: true },
-    });
-
-    const targetIsL3 =
-      targetMembership?.isActive && targetMembership.role === "TENANT_ADMIN";
-
+    const targetIsL3 = previous?.isActive && previous.role === "TENANT_ADMIN";
     if (targetIsL3) {
       const otherActiveL3 = await prisma.tenantMembership.findFirst({
         where: {
@@ -139,7 +129,6 @@ export async function POST(
         },
         select: { id: true },
       });
-
       if (!otherActiveL3) {
         // Block demotion if this is the last active L3
         return NextResponse.json(
@@ -161,9 +150,8 @@ export async function POST(
             isActive: true,
             userId: { not: targetUserId },
           },
-          select: { id: true },
+          select: { id: true, role: true },
         });
-
         if (existingL3) {
           await tx.tenantMembership.update({
             where: { id: existingL3.id },
@@ -171,10 +159,9 @@ export async function POST(
           });
         }
 
-        // Upsert target as L3 (active)
         const existing = await tx.tenantMembership.findFirst({
           where: { tenantId, userId: targetUserId },
-          select: { id: true },
+          select: { id: true, role: true, isActive: true },
         });
 
         if (existing) {
@@ -192,13 +179,41 @@ export async function POST(
             },
           });
         }
+
+        // Audit inside the same tx
+        await writeAudit({
+          tenantId,
+          actorUserId: actorId,
+          action: "user.role.changed",
+          req,
+          tx,
+          meta: {
+            targetUserId,
+            before: previous ?? null,
+            after: { role: "TENANT_ADMIN", isActive: true },
+          },
+        });
       });
     } else {
       // Set MANAGER or MEMBER (active)
-      await prisma.tenantMembership.upsert({
+      const updated = await prisma.tenantMembership.upsert({
         where: { userId_tenantId: { userId: targetUserId, tenantId } as any }, // @@unique([userId, tenantId])
         update: { role, isActive: true },
         create: { userId: targetUserId, tenantId, role, isActive: true },
+        select: { role: true, isActive: true },
+      });
+
+      // Audit post-commit (separate write is fine here)
+      await writeAudit({
+        tenantId,
+        actorUserId: actorId,
+        action: "user.role.changed",
+        req,
+        meta: {
+          targetUserId,
+          before: previous ?? null,
+          after: updated,
+        },
       });
     }
   } catch (e) {

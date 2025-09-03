@@ -1,21 +1,10 @@
 // src/app/api/admin/tenants/[tenantId]/entitlements/route.ts
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUserId } from "@/lib/current-user";
+import { writeAudit } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
-
-// Best-effort actor resolver for local dev (replace with real session later)
-async function getActorUserId(): Promise<string | null> {
-  try {
-    const user = await prisma.user.findFirst({
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
-    });
-    return user?.id ?? null;
-  } catch {
-    return null;
-  }
-}
 
 // GET: list modules + current entitlement state for a tenant
 export async function GET(
@@ -28,20 +17,17 @@ export async function GET(
   }
 
   try {
-    // Load all modules (registry)
     const modules = await prisma.module.findMany({
       orderBy: { name: "asc" },
       select: { key: true, name: true, description: true },
     });
 
-    // Load existing entitlements for this tenant
     const ents = await prisma.entitlement.findMany({
       where: { tenantId },
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
-    const entMap = new Map(ents.map((e) => [e.moduleKey, e]));
 
-    // Merge for UI
+    const entMap = new Map(ents.map((e) => [e.moduleKey, e]));
     const rows = modules.map((m) => {
       const e = entMap.get(m.key);
       return {
@@ -56,10 +42,7 @@ export async function GET(
     return NextResponse.json({ ok: true, items: rows }, { status: 200 });
   } catch (err) {
     console.error("GET entitlements error:", err);
-    return NextResponse.json(
-      { error: "Failed to load entitlements" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to load entitlements" }, { status: 500 });
   }
 }
 
@@ -69,10 +52,14 @@ export async function PATCH(
   { params }: { params: { tenantId: string } }
 ) {
   const tenantId = params?.tenantId;
-
   try {
     if (!tenantId) {
       return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+    }
+
+    const actorUserId = await getCurrentUserId();
+    if (!actorUserId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -128,20 +115,14 @@ export async function PATCH(
       select: { moduleKey: true, isEnabled: true, limitsJson: true },
     });
 
-    // Audit log (non-fatal)
+    // Audit (non-fatal)
     try {
-      const actorUserId = await getActorUserId();
-      await prisma.auditLog.create({
-        data: {
-          tenantId,
-          actorUserId,
-          action: "entitlement.update",
-          metaJson: {
-            moduleKey,
-            before: before ?? null,
-            after: updated,
-          },
-        },
+      await writeAudit({
+        tenantId,
+        actorUserId,
+        action: "entitlement.update",
+        meta: { moduleKey, before: before ?? null, after: updated },
+        req,
       });
     } catch (logErr) {
       console.warn("Audit log failed (entitlement.update):", logErr);
@@ -150,9 +131,6 @@ export async function PATCH(
     return NextResponse.json({ ok: true, entitlement: updated }, { status: 200 });
   } catch (err) {
     console.error("PATCH entitlements error:", err);
-    return NextResponse.json(
-      { error: "Failed to update entitlement" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to update entitlement" }, { status: 500 });
   }
 }

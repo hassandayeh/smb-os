@@ -2,12 +2,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
+import { writeAudit } from "@/lib/audit";
 
 /**
  * Authorization:
- *  - L1 (DEVELOPER) or L2 (APP_ADMIN) → allowed
- *  - L3 (TENANT_ADMIN) of the target tenant → allowed
- *  - Others → 403
+ * - L1 (DEVELOPER) or L2 (APP_ADMIN) → allowed
+ * - L3 (TENANT_ADMIN) of the target tenant → allowed
+ * - Others → 403
  */
 async function assertCanManageUser(actingUserId: string, tenantId: string) {
   // Platform roles?
@@ -41,7 +42,6 @@ export async function GET(
   }
   try {
     await assertCanManageUser(userId, params.tenantId);
-
     const ents = await prisma.userEntitlement.findMany({
       where: {
         tenantId: params.tenantId,
@@ -50,7 +50,6 @@ export async function GET(
       select: { moduleKey: true, isEnabled: true },
       orderBy: { moduleKey: "asc" },
     });
-
     return NextResponse.json({ entitlements: ents });
   } catch (e: any) {
     const status = e?.status ?? 500;
@@ -99,16 +98,28 @@ export async function POST(
       update: { isEnabled },
     });
 
-    // Optional: You can add an audit log entry here if desired.
-    // await prisma.auditLog.create({...})
+    // Audit (non-fatal)
+    try {
+      await writeAudit({
+        tenantId: params.tenantId,
+        actorUserId: actingUserId,
+        action: "user.entitlement.update",
+        meta: {
+          targetUserId: params.userId,
+          moduleKey,
+          isEnabled,
+        },
+        req,
+      });
+    } catch (logErr) {
+      console.warn("Audit log failed (user.entitlement.update):", logErr);
+    }
 
-    // Redirect back to the page the form provided
+    // Redirect back to the page the form provided if present
     if (redirectTo) {
-      // Ensure absolute URL for NextResponse.redirect
       const url = new URL(redirectTo, new URL(req.url).origin);
       return NextResponse.redirect(url, { status: 303 });
     }
-
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     const status = e?.status ?? 500;

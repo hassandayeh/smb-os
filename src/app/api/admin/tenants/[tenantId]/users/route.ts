@@ -9,6 +9,7 @@ import {
   type TargetLevel,
   canCreateUserWithRole,
 } from "@/lib/access";
+import { writeAudit } from "@/lib/audit";
 
 // --- Local dev hasher (Keystone note: replace with bcrypt/argon2 in auth lib) ---
 async function hashPasswordDev(password: string) {
@@ -18,11 +19,11 @@ async function hashPasswordDev(password: string) {
 export const dynamic = "force-dynamic";
 
 type CreateUserBody = {
-  name?: string;        // REQUIRED (server-side validation)
-  email?: string;       // OPTIONAL; placeholder used if blank
-  username?: string;    // REQUIRED; normalized to slugish lowercase
+  name?: string; // REQUIRED (server-side validation)
+  email?: string; // OPTIONAL; placeholder used if blank
+  username?: string; // REQUIRED; normalized to slugish lowercase
   role?: "APP_ADMIN" | "TENANT_ADMIN" | "MANAGER" | "MEMBER";
-  redirectTo?: string;  // optional redirect after creation
+  redirectTo?: string; // optional redirect after creation
 };
 
 // ---------- Helpers ----------
@@ -162,6 +163,7 @@ export async function POST(
 
     // 2) Check existing by (tenantId,email) if a real email was provided
     const hasRealEmail = !!email && !/@(?:^|\.)local$/i.test(email);
+
     let user =
       hasRealEmail
         ? await prisma.user.findUnique({
@@ -302,18 +304,18 @@ export async function POST(
 
     // 5) Audit log (non-fatal)
     try {
-      await prisma.auditLog.create({
-        data: {
-          tenantId,
-          actorUserId,
-          action: role === "APP_ADMIN" ? "user.create.app_admin" : "user.create",
-          metaJson: {
-            targetUserId: user.id,
-            email: user.email,
-            username: user.username,
-            role,
-            membershipRole: membership?.role ?? null,
-          },
+      await writeAudit({
+        tenantId,
+        actorUserId,
+        action: "user.create",
+        req,
+        meta: {
+          targetUserId: user.id,
+          username: user.username,
+          email: user.email,
+          assignedRole: role ?? null,
+          membershipRole: membership?.role ?? null,
+          platformRole: role === "APP_ADMIN" ? "APP_ADMIN" : null,
         },
       });
     } catch (logErr) {
