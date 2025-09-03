@@ -11,6 +11,10 @@ export const en: Messages = {
   'actions.preview': 'Preview as',
   'actions.clearPreview': 'Clear preview',
 
+  "language.label": "Language",
+  "language.english": "English",
+  "language.arabic": "Arabic",
+
   // Status
   'status.active': 'Active',
   'status.inactive': 'Inactive',
@@ -33,3 +37,5 @@ export const en: Messages = {
   'settings.saved': 'Settings saved',
   'settings.saveFailed': 'Could not save settings',
 };
+
+

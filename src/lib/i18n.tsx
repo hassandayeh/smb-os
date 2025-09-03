@@ -3,7 +3,9 @@
 import React, { createContext, useContext, useMemo } from 'react';
 
 export type Messages = Record<string, string>;
-export type Locale = 'en';
+
+/** Phase 0: supported locales — add more as you add catalogs. */
+export type Locale = 'en' | 'ar';
 
 type I18nContextValue = {
   locale: Locale;
@@ -38,8 +40,7 @@ export function I18nProvider({
             // eslint-disable-next-line no-console
             console.warn(`[i18n] Missing key: "${key}" for locale "${locale}"`);
           }
-          // Show the key itself so it's obvious during Phase 1 keying-on-touch.
-          return key;
+          return key; // show the key in dev for easy spotting
         }
         return format(found, params);
       },
