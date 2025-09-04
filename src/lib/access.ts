@@ -16,6 +16,7 @@ import { getCurrentUserId } from "@/lib/current-user";
  * NOTE: We keep this helper self-contained and side-effect free.
  * Admin editing screens will keep their own checks; this is for feature access in tenant space.
  */
+
 type PlatformRole = "DEVELOPER" | "APP_ADMIN";
 type TenantMemberRole = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
@@ -71,7 +72,6 @@ export async function hasModuleAccess(params: {
   if (!membership || !membership.isActive) {
     return { allowed: false, reason: "NO_MEMBERSHIP" };
   }
-
   const role = membership.role as TenantMemberRole;
   if (role === "TENANT_ADMIN") {
     return { allowed: true, reason: "TENANT_ADMIN" };
@@ -85,6 +85,7 @@ export async function hasModuleAccess(params: {
   if (ue?.isEnabled) {
     return { allowed: true, reason: "USER_ENTITLEMENT_ON" };
   }
+
   // Distinguish between missing user rule and explicit OFF
   if (ue == null) {
     return { allowed: false, reason: "NO_USER_RULE" };
@@ -103,10 +104,9 @@ export async function requireAccess(params: {
 }) {
   const decision = await hasModuleAccess(params);
   if (!decision.allowed) {
-    const error = new Error(`Forbidden (${decision.reason})`);
-    // @ts-expect-error - tag a code for route handlers to map to 403
+    const error: any = new Error(`Forbidden (${decision.reason})`);
+    // tag a code for route handlers to map to 403
     error.status = 403;
-    // @ts-expect-error
     error.reason = decision.reason;
     throw error;
   }
@@ -132,8 +132,9 @@ export async function ensureModuleAccessOrRedirect(
 }
 
 /* -------------------------------------------------------------------------- */
-/* CENTRALIZED PYRAMIDS ROLE LOGIC */
+/* CENTRALIZED PYRAMIDS ROLE LOGIC                                            */
 /* -------------------------------------------------------------------------- */
+
 export type Level = "L1" | "L2" | "L3" | "L4" | "L5";
 export type TargetLevel = Exclude<Level, "L1">; // cannot create L1
 
@@ -218,6 +219,7 @@ export function canManageUser(params: {
   const { actorLevel, targetLevel, allowSelf = false, isSelf = false } = params;
   if (!actorLevel || !targetLevel) return false;
   if (isSelf && !allowSelf) return false;
+
   if (actorLevel === "L1") return true;
   if (actorLevel === "L2") {
     return targetLevel === "L3" || targetLevel === "L4" || targetLevel === "L5";
@@ -244,16 +246,16 @@ export function assertCanCreateRole(params: {
     (requestedLevel ?? "") as TargetLevel
   );
   if (!allowed) {
-    const error = new Error("Forbidden (role.create.not_allowed)");
-    // @ts-expect-error status tag for routes
+    const error: any = new Error("Forbidden (role.create.not_allowed)");
     error.status = 403;
     throw error;
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Platform Admin (non-tenant) guard */
+/* NEW: Platform Admin (non-tenant) guard                                     */
 /* -------------------------------------------------------------------------- */
+
 /**
  * For ADMIN area pages/layouts (non-tenant context).
  * Allows only platform staff (L1/L2). Throws 403 otherwise.
@@ -261,8 +263,7 @@ export function assertCanCreateRole(params: {
  */
 export async function requireAdminAccess(userId?: string | null) {
   if (!userId) {
-    const err = new Error("Forbidden (AUTH)");
-    // @ts-expect-error status tag used by route/page error mappers
+    const err: any = new Error("Forbidden (AUTH)");
     err.status = 403;
     throw err;
   }
@@ -270,15 +271,15 @@ export async function requireAdminAccess(userId?: string | null) {
   const level = await getActorLevel(userId, "platform");
   if (level === "L1" || level === "L2") return true;
 
-  const err = new Error("Forbidden (ADMIN_ONLY)");
-  // @ts-expect-error status tag used by route/page error mappers
+  const err: any = new Error("Forbidden (ADMIN_ONLY)");
   err.status = 403;
   throw err;
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Settings (control plane) guard for L1/L2/L3 */
+/* NEW: Settings (control plane) guard for L1/L2/L3                           */
 /* -------------------------------------------------------------------------- */
+
 /**
  * Settings is a tenant control surface, not a feature module.
  * It should be accessible to L1/L2 (platform) and L3 (tenant admin),
@@ -304,23 +305,22 @@ export async function requireL3SettingsAccess(
   userId: string | null | undefined
 ) {
   if (!userId) {
-    const err = new Error("Forbidden (AUTH)");
-    // @ts-expect-error tag for route handlers
+    const err: any = new Error("Forbidden (AUTH)");
     err.status = 403;
     throw err;
   }
   const level = await getActorLevel(userId, tenantId);
   if (level === "L1" || level === "L2" || level === "L3") return true;
 
-  const err = new Error("Forbidden (SETTINGS_NOT_ALLOWED)");
-  // @ts-expect-error tag for route handlers
+  const err: any = new Error("Forbidden (SETTINGS_NOT_ALLOWED)");
   err.status = 403;
   throw err;
 }
 
 /* -------------------------------------------------------------------------- */
-/* EXISTING: Centralized delete guard (Keystone) */
+/* EXISTING: Centralized delete guard (Keystone)                               */
 /* -------------------------------------------------------------------------- */
+
 export async function canDeleteUser(params: {
   tenantId: string;
   actorUserId: string;
@@ -332,7 +332,7 @@ export async function canDeleteUser(params: {
   const [actorLevel, targetMembership] = await Promise.all([
     getActorLevel(actorUserId, tenantId), // L1–L5 or null
     prisma.tenantMembership.findUnique({
-      where: { userId_tenantId: { userId: targetUserId, tenantId } },
+      where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
       select: { role: true, isActive: true, deletedAt: true },
     }),
   ]);
@@ -346,7 +346,9 @@ export async function canDeleteUser(params: {
     | "TENANT_ADMIN"
     | "MANAGER"
     | "MEMBER";
-  const targetLevel = role === "TENANT_ADMIN" ? "L3" : role === "MANAGER" ? "L4" : "L5";
+  const targetLevel =
+    role === "TENANT_ADMIN" ? "L3" : role === "MANAGER" ? "L4" : "L5";
+
   const isSelf = actorUserId === targetUserId;
 
   // L1/L2 manage all (including L3), self-management still blocked by default
@@ -369,10 +371,9 @@ export async function canDeleteUser(params: {
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Self-management + Peer-blocking (General) */
+/* NEW: Self-management + Peer-blocking (General)                              */
 /* -------------------------------------------------------------------------- */
 
-/** Intent categories we might treat differently later (fine-grained audit/policy). */
 export type ManageIntent = "view" | "edit" | "status" | "role" | "delete";
 
 /**
@@ -387,23 +388,31 @@ export async function canManageUserGeneral(params: {
   actorUserId: string;
   targetUserId: string;
   intent: ManageIntent;
-}): Promise<{ allowed: boolean; reason?: string; actorLevel?: Level | null; targetLevel?: Level | null }> {
+}): Promise<{
+  allowed: boolean;
+  reason?: string;
+  actorLevel?: Level | null;
+  targetLevel?: Level | null;
+}> {
   const { tenantId, actorUserId, targetUserId, intent } = params;
-
   const [actorLevel, targetMembership] = await Promise.all([
     getActorLevel(actorUserId, tenantId),
     prisma.tenantMembership.findUnique({
-      where: { userId_tenantId: { userId: targetUserId, tenantId } },
+      where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
       select: { role: true, isActive: true, deletedAt: true },
     }),
   ]);
 
-  if (!actorLevel) return { allowed: false, reason: "actor.level.unknown", actorLevel: null, targetLevel: null };
+  if (!actorLevel)
+    return { allowed: false, reason: "actor.level.unknown", actorLevel: null, targetLevel: null };
+
   if (!targetMembership || !!targetMembership.deletedAt)
     return { allowed: false, reason: "target.not_found_or_deleted", actorLevel, targetLevel: null };
 
   const targetRole = (targetMembership.role ?? "MEMBER") as TenantMemberRole;
-  const targetLevel: Level = targetRole === "TENANT_ADMIN" ? "L3" : targetRole === "MANAGER" ? "L4" : "L5";
+  const targetLevel: Level =
+    targetRole === "TENANT_ADMIN" ? "L3" : targetRole === "MANAGER" ? "L4" : "L5";
+
   const isSelf = actorUserId === targetUserId;
 
   // 1) No self-delete for anyone
@@ -428,42 +437,13 @@ export async function canManageUserGeneral(params: {
     allowSelf: isSelf && actorLevel === "L1" && intent !== "delete",
     isSelf,
   });
-
   return allowed
     ? { allowed: true, actorLevel, targetLevel }
     : { allowed: false, reason: "hierarchy.forbidden", actorLevel, targetLevel };
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Create guard with peer-blocking */
-/* -------------------------------------------------------------------------- */
-export async function canCreateUserWithRole(params: {
-  tenantId: string;
-  actorUserId: string;
-  requestedLevel: TargetLevel | null;
-}): Promise<{ allowed: boolean; reason?: string; actorLevel?: Level | null }> {
-  const { tenantId, actorUserId, requestedLevel } = params;
-
-  const actorLevel = await getActorLevel(actorUserId, tenantId);
-  if (!actorLevel) return { allowed: false, reason: "actor.level.unknown", actorLevel: null };
-  if (!requestedLevel) return { allowed: false, reason: "requested.level.unknown", actorLevel };
-
-  // Peer-block: requested level must not equal actor level
-  if (requestedLevel === actorLevel) {
-    return { allowed: false, reason: "peer.create.forbidden", actorLevel };
-  }
-
-  // Reuse centralized matrix
-  const allowed = getCreatableRolesFor(actorLevel).includes(requestedLevel);
-  if (!allowed) {
-    return { allowed: false, reason: "matrix.create.forbidden", actorLevel };
-  }
-
-  return { allowed: true, actorLevel };
-}
-
-/* -------------------------------------------------------------------------- */
-/* NEW: Impersonation rules (Keystone) — HOTFIX (no supervisorId dependency)   */
+/* NEW: Impersonation rules (Keystone) — HOTFIX (no supervisorId dependency)  */
 /* -------------------------------------------------------------------------- */
 
 export async function canImpersonate(actorUserId: string, targetUserId: string) {
@@ -475,16 +455,12 @@ export async function canImpersonate(actorUserId: string, targetUserId: string) 
 
   // Load both users (only fields that exist in current schema)
   const [actor, target] = await Promise.all([
-    prisma.user.findUnique({
-      where: { id: actorUserId },
-      select: { id: true, tenantId: true },
-    }),
+    prisma.user.findUnique({ where: { id: actorUserId }, select: { id: true, tenantId: true } }),
     prisma.user.findUnique({
       where: { id: targetUserId },
       select: { id: true, tenantId: true }, // no supervisorId
     }),
   ]);
-
   if (!actor || !target) {
     return { allowed: false as const, reason: "impersonation.user_not_found" };
   }
@@ -500,20 +476,19 @@ export async function canImpersonate(actorUserId: string, targetUserId: string) 
       ? { allowed: true as const, reason: "L3.same_tenant" }
       : { allowed: false as const, reason: "L3.cross_tenant.forbidden" };
   }
-
   if (level === "L4") {
     // HOTFIX: we don’t know supervision mapping yet — deny for safety
     return { allowed: false as const, reason: "L4.supervision_not_configured" };
   }
-
   // L5 & unknown
   return { allowed: false as const, reason: "L5.forbidden" };
 }
 
 /* -------------------------------------------------------------------------- */
-/* NEW: Central helper to block removing the last active L3                    */
+/* NEW: Central helpers to block removing/demoting the last active L3         */
 /* -------------------------------------------------------------------------- */
 
+/** Block actions that remove the ONLY active L3 (delete/deactivate). */
 export async function assertNotLastActiveL3(params: {
   tenantId: string;
   targetUserId: string;
@@ -524,7 +499,6 @@ export async function assertNotLastActiveL3(params: {
     where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
     select: { role: true, isActive: true },
   });
-
   const targetIsActiveL3 = !!target?.isActive && target?.role === "TENANT_ADMIN";
   if (!targetIsActiveL3) return;
 
@@ -539,9 +513,42 @@ export async function assertNotLastActiveL3(params: {
   });
 
   if (!otherActiveL3) {
-    const err = new Error("errors.membership.lastL3.forbidden");
-    // @ts-expect-error attach status for route mappers
+    const err: any = new Error("errors.membership.lastL3.forbidden");
     err.status = 403;
+    throw err;
+  }
+}
+
+/** Block demoting the ONLY active L3 (TENANT_ADMIN → MANAGER/MEMBER). */
+export async function assertNotDemotingLastActiveL3(params: {
+  tenantId: string;
+  targetUserId: string;
+  nextRole: TenantMemberRole | undefined | null;
+}) {
+  const { tenantId, targetUserId, nextRole } = params;
+  if (!nextRole || nextRole === "TENANT_ADMIN") return;
+
+  const m = await prisma.tenantMembership.findUnique({
+    where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
+    select: { role: true, isActive: true },
+  });
+
+  const demotingActiveL3 = !!m?.isActive && m?.role === "TENANT_ADMIN";
+  if (!demotingActiveL3) return;
+
+  const others = await prisma.tenantMembership.count({
+    where: {
+      tenantId,
+      role: "TENANT_ADMIN",
+      isActive: true,
+      deletedAt: null as any,
+      NOT: { userId: targetUserId },
+    },
+  });
+
+  if (others === 0) {
+    const err: any = new Error("errors.membership.demote_lastL3.forbidden");
+    err.status = 409; // conflict
     throw err;
   }
 }

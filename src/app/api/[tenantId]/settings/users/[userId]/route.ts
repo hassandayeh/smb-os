@@ -3,9 +3,14 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole, type Prisma } from "@prisma/client";
-import { guardTenantModule } from "@/lib/guard-route"; // ⬅️ Keystone tenant guard
-import { canDeleteUser, canManageUserGeneral } from "@/lib/access"; // ⬅️ centralized guards
-import { writeAudit } from "@/lib/audit"; // ⬅️ centralized audit
+import { guardTenantModule } from "@/lib/guard-route"; // Keystone tenant guard
+import {
+  canDeleteUser,
+  canManageUserGeneral,
+  assertNotLastActiveL3,
+  assertNotDemotingLastActiveL3,
+} from "@/lib/access"; // centralized guards/assertions
+import { writeAudit } from "@/lib/audit"; // centralized audit
 
 export const dynamic = "force-dynamic";
 
@@ -108,7 +113,6 @@ function yyyymmddUTC(d = new Date()) {
   const day = d.getUTCDate().toString().padStart(2, "0");
   return `${y}${m}${day}`;
 }
-
 async function buildUniqueDeletedUsername(
   tenantId: string,
   baseUsername: string,
@@ -117,11 +121,13 @@ async function buildUniqueDeletedUsername(
   const ISO = yyyymmddUTC();
   const MAX = 64;
   const reserve = 1 + 8; // "-" + date
+
   let core = baseUsername.trim();
   if (core.length + reserve > MAX) core = core.slice(0, MAX - reserve);
 
   let candidate = `${core}-${ISO}`;
   let n = 2;
+
   while (
     await tx.user.findFirst({
       where: { tenantId, username: candidate },
@@ -174,13 +180,10 @@ async function handleDeleteOrUpdate(
 ) {
   const { tenantId, userId } = params || {};
   if (!tenantId || !userId)
-    return NextResponse.json(
-      { error: "tenantId and userId are required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "errors.params.required" }, { status: 400 });
 
   const actorUserId = await getCurrentUserId();
-  if (!actorUserId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!actorUserId) return NextResponse.json({ error: "errors.auth" }, { status: 403 });
 
   const body = await readBody(req);
   const isDelete =
@@ -194,12 +197,7 @@ async function handleDeleteOrUpdate(
   if (isDelete) {
     // No self delete (even for platform staff)
     if (actorUserId === userId) {
-      return redirectOrJson(
-        req,
-        body.redirectTo,
-        { error: "Self-delete is not allowed" },
-        400
-      );
+      return redirectOrJson(req, body.redirectTo, { error: "errors.self_delete" }, 400);
     }
 
     const { allowed, reason } = await canDeleteUser({
@@ -228,36 +226,19 @@ async function handleDeleteOrUpdate(
         }),
       ]);
       if (!user || user.tenantId !== tenantId)
-        return NextResponse.json({ error: "user not found in tenant" }, { status: 404 });
+        return NextResponse.json({ error: "errors.user.not_found_in_tenant" }, { status: 404 });
+
       if (!membership || membership.deletedAt) {
         return redirectOrJson(
           req,
           body.redirectTo,
-          { error: "membership not found or already deleted" },
+          { error: "errors.membership.not_found_or_deleted" },
           400
         );
       }
 
-      // Protect last active L3
-      if (membership.role === TenantMemberRole.TENANT_ADMIN) {
-        const others = await prisma.tenantMembership.count({
-          where: {
-            tenantId,
-            role: TenantMemberRole.TENANT_ADMIN,
-            isActive: true,
-            deletedAt: null,
-            NOT: { userId },
-          },
-        });
-        if (others === 0) {
-          return redirectOrJson(
-            req,
-            body.redirectTo,
-            { error: "Cannot delete the last active Tenant Admin" },
-            400
-          );
-        }
-      }
+      // Protect last active L3 (delete case)
+      await assertNotLastActiveL3({ tenantId, targetUserId: userId });
 
       const result = await prisma.$transaction(async (tx) => {
         const oldUsername = user.username;
@@ -271,7 +252,7 @@ async function handleDeleteOrUpdate(
 
         // Soft-delete membership
         await tx.tenantMembership.updateMany({
-          where: { tenantId, userId, deletedAt: null },
+          where: { tenantId, userId, deletedAt: null as any },
           data: { deletedAt: new Date(), deletedByUserId: actorUserId, isActive: false },
         });
 
@@ -305,33 +286,33 @@ async function handleDeleteOrUpdate(
       return NextResponse.json({ ok: true, deleted: true, ...result }, { status: 200 });
     } catch (err) {
       console.error("DELETE user error:", err);
-      return NextResponse.json({ error: "failed to delete user" }, { status: 500 });
+      return NextResponse.json({ error: "errors.user.delete_failed" }, { status: 500 });
     }
   }
 
   // ----------------- Status toggle / set -----------------
-  const decision = await canManageUserGeneral({
+  const decisionStatus = await canManageUserGeneral({
     tenantId,
     actorUserId,
     targetUserId: userId,
     intent: "status",
   });
-  if (!decision.allowed) {
+  if (!decisionStatus.allowed) {
     return redirectOrJson(
       req,
       body.redirectTo,
-      { error: `Forbidden (${decision.reason ?? "status.denied"})` },
+      { error: `Forbidden (${decisionStatus.reason ?? "status.denied"})` },
       403
     );
   }
 
   // Load current membership
   const prev = await prisma.tenantMembership.findFirst({
-    where: { tenantId, userId, deletedAt: null },
+    where: { tenantId, userId, deletedAt: null as any },
     select: { id: true, role: true, isActive: true },
   });
   if (!prev) {
-    return redirectOrJson(req, body.redirectTo, { error: "membership not found" }, 404);
+    return redirectOrJson(req, body.redirectTo, { error: "errors.membership.not_found" }, 404);
   }
 
   // Determine the next isActive
@@ -340,26 +321,10 @@ async function handleDeleteOrUpdate(
 
   // Prevent deactivating the last active L3
   if (prev.role === "TENANT_ADMIN" && nextIsActive === false) {
-    const others = await prisma.tenantMembership.count({
-      where: {
-        tenantId,
-        role: "TENANT_ADMIN",
-        isActive: true,
-        deletedAt: null,
-        NOT: { userId },
-      },
-    });
-    if (others === 0) {
-      return redirectOrJson(
-        req,
-        body.redirectTo,
-        { error: "Cannot deactivate the last active Tenant Admin" },
-        400
-      );
-    }
+    await assertNotLastActiveL3({ tenantId, targetUserId: userId });
   }
 
-  // Apply toggle
+  // Apply status change
   await prisma.tenantMembership.update({
     where: { id: prev.id },
     data: { isActive: nextIsActive },
@@ -377,6 +342,58 @@ async function handleDeleteOrUpdate(
     },
     req,
   });
+
+  // ----------------- Role update (optional) -----------------
+  const nextRole = toEnumRole(body.role);
+  if (nextRole && nextRole !== prev.role) {
+    // Intent guard
+    const decisionRole = await canManageUserGeneral({
+      tenantId,
+      actorUserId,
+      targetUserId: userId,
+      intent: "role",
+    });
+    if (!decisionRole.allowed) {
+      return redirectOrJson(
+        req,
+        body.redirectTo,
+        { error: `Forbidden (${decisionRole.reason ?? "role.denied"})` },
+        403
+      );
+    }
+
+    // Safety: block demoting the last active L3
+    await assertNotDemotingLastActiveL3({
+      tenantId,
+      targetUserId: userId,
+      nextRole,
+    });
+
+    const updated = await prisma.tenantMembership.update({
+      where: { id: prev.id },
+      data: { role: nextRole },
+      select: { role: true, isActive: true },
+    });
+
+    await writeAudit({
+      tenantId,
+      actorUserId,
+      action: "user.role.changed",
+      meta: {
+        targetUserId: userId,
+        before: { role: prev.role },
+        after: { role: updated.role },
+      },
+      req,
+    });
+
+    return redirectOrJson(
+      req,
+      body.redirectTo,
+      { ok: true, isActive: nextIsActive, role: updated.role },
+      200
+    );
+  }
 
   return redirectOrJson(req, body.redirectTo, { ok: true, isActive: nextIsActive }, 200);
 }

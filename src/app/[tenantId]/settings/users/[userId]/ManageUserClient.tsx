@@ -2,8 +2,26 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+
+// Optional toast support: if your project exposes a toast hook,
+// we use it; otherwise we no-op (no extra deps introduced).
+let useToast:
+  | undefined
+  | (() => {
+      toast: (opts: {
+        title?: string;
+        description?: string;
+        variant?: "default" | "destructive" | "success";
+      }) => void;
+    });
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  useToast = require("@/components/ui/use-toast").useToast;
+} catch {
+  /* noop if not present */
+}
 
 type TenantRole = "TENANT_ADMIN" | "MANAGER" | "MEMBER";
 
@@ -60,6 +78,8 @@ export default function ManageUserClient(props: Props) {
   } = props;
 
   const router = useRouter();
+  const sp = useSearchParams();
+  const toastApi = useToast ? useToast() : null;
 
   // === Existing state (Role/Status) ===
   const [role, setRole] = useState<TenantRole>(initialRole);
@@ -68,7 +88,10 @@ export default function ManageUserClient(props: Props) {
   const [error, setError] = useState<string | null>(null);
 
   // NOTE: Keeping your existing consolidated route as-is per golden rules.
-  const apiBase = useMemo(() => `/api/${tenantId}/settings/users/${userId}`, [tenantId, userId]);
+  const apiBase = useMemo(
+    () => `/api/${tenantId}/settings/users/${userId}`,
+    [tenantId, userId]
+  );
 
   function patch(body: Record<string, unknown>) {
     setError(null);
@@ -110,6 +133,7 @@ export default function ManageUserClient(props: Props) {
       "Soft delete this user? They will be removed from the list (membership marked deleted) and an audit entry will be recorded."
     );
     if (!confirmed) return;
+
     startTransition(async () => {
       try {
         const res = await fetch(apiBase, { method: "DELETE" });
@@ -130,7 +154,7 @@ export default function ManageUserClient(props: Props) {
   const roleOptions: TenantRole[] = ["TENANT_ADMIN", "MANAGER", "MEMBER"];
   const visibleRoleOptions = roleOptions.filter((r) => allowedRoles.includes(r));
 
-  // === New: Supervisor (Manager) mapping section (for L5 only) ===
+  // === Supervisor (Manager) mapping section (for L5 only) ===
   type SupervisorPayload = {
     supervisor: {
       currentId: string | null;
@@ -141,12 +165,12 @@ export default function ManageUserClient(props: Props) {
 
   const isMember = role === "MEMBER";
 
-  const [mgrLoading, setMgrLoading] = useState<boolean>(false);
-  const [mgrSaving, setMgrSaving] = useState<boolean>(false);
+  const [mgrLoading, setMgrLoading] = useState(false);
+  const [mgrSaving, setMgrSaving] = useState(false);
   const [mgrError, setMgrError] = useState<string | null>(null);
   const [currentSupervisorId, setCurrentSupervisorId] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<Array<{ id: string; name: string }>>([]);
-  const [canAssign, setCanAssign] = useState<boolean>(false);
+  const [canAssign, setCanAssign] = useState(false);
 
   useEffect(() => {
     if (!isMember) return; // Only for L5
@@ -156,7 +180,9 @@ export default function ManageUserClient(props: Props) {
       setMgrError(null);
       try {
         const data = await fetchJSON<SupervisorPayload>(
-          `/api/admin/tenants/supervisor?tenantId=${encodeURIComponent(tenantId)}&userId=${encodeURIComponent(userId)}`
+          `/api/admin/tenants/supervisor?tenantId=${encodeURIComponent(
+            tenantId
+          )}&userId=${encodeURIComponent(userId)}`
         );
         if (cancelled) return;
         setCurrentSupervisorId(data.supervisor.currentId);
@@ -179,63 +205,82 @@ export default function ManageUserClient(props: Props) {
     setMgrError(null);
     setMgrSaving(true);
     try {
-      const data = await postJSON<{ ok: true; supervisorId: string | null }>(`/api/admin/tenants/supervisor`, {
-        tenantId,
-        userId,
-        supervisorId: nextId && nextId.length > 0 ? nextId : null,
-      });
+      const data = await postJSON<{ ok: true; supervisorId: string | null }>(
+        `/api/admin/tenants/supervisor`,
+        {
+          tenantId,
+          userId,
+          supervisorId: nextId && (nextId as string).length > 0 ? nextId : null,
+        }
+      );
+
       setCurrentSupervisorId(data.supervisorId ?? null);
-      // Optional: light refresh to keep everything in sync
+
+      // HORIZON POLISH:
+      // 1) Success toast (if hook exists)
+      toastApi?.toast?.({
+        title: "Manager updated.", // keep existing copy to avoid churn
+        variant: "success",
+      });
+
+      // 2) Trigger SavedBanner by adding ?saved=1 then refresh
+      const params = new URLSearchParams(sp?.toString() || "");
+      params.set("saved", "1");
+      // replace current URL to avoid duplicate history entry
+      router.replace(`?${params.toString()}`, { scroll: false });
       router.refresh();
     } catch (e: any) {
       setMgrError(e?.message || "Failed to update manager");
+      toastApi?.toast?.({
+        title: "Couldn't update manager.",
+        variant: "destructive",
+      });
     } finally {
       setMgrSaving(false);
     }
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Status */}
       <section className="space-y-2">
         <h3 className="text-base font-semibold">Status</h3>
-        <p className="text-sm text-muted-foreground">
-          {isActive ? "Active" : "Inactive"} — toggle to {isActive ? "deactivate" : "activate"} this user
+        <p className="text-sm">
+          {isActive ? "Active" : "Inactive"} — toggle to {isActive ? "deactivate" : "activate"} this
+          user
         </p>
-        <div className="flex items-center gap-3">
-          <span className="text-sm">{isActive ? "On" : "Off"}</span>
+
+        <label className="inline-flex items-center gap-2">
           <input
             type="checkbox"
-            className="h-4 w-4"
             checked={isActive}
-            disabled={!canToggleStatus || busy}
             onChange={onToggleActive}
+            disabled={!canToggleStatus || busy}
           />
-        </div>
+          <span>{isActive ? "On" : "Off"}</span>
+        </label>
       </section>
 
       {/* Role */}
       <section className="space-y-2">
         <h3 className="text-base font-semibold">Role</h3>
-        <p className="text-sm text-muted-foreground">Changes save automatically</p>
+        <p className="text-sm">Changes save automatically</p>
 
         {visibleRoleOptions.length > 0 ? (
-          <div className="max-w-xs">
-            <select
-              value={role}
-              disabled={disableRoleChange || busy}
-              onChange={onRoleChange}
-              className="w-full rounded-md border px-3 py-2 text-sm"
-            >
-              {visibleRoleOptions.map((r) => (
-                <option key={r} value={r}>
-                  {r === "TENANT_ADMIN" ? "Tenant Admin" : r === "MANAGER" ? "Manager" : "Member"}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            className="rounded-lg border px-3 py-2"
+            value={role}
+            onChange={onRoleChange}
+            disabled={disableRoleChange || busy}
+          >
+            {visibleRoleOptions.map((r) => (
+              <option key={r} value={r}>
+                {r === "TENANT_ADMIN" ? "Tenant Admin" : r === "MANAGER" ? "Manager" : "Member"}
+              </option>
+            ))}
+          </select>
         ) : (
-          <div className="text-sm text-muted-foreground">You can’t change this user’s role.</div>
+          <p className="text-sm">You can’t change this user’s role.</p>
         )}
       </section>
 
@@ -243,16 +288,14 @@ export default function ManageUserClient(props: Props) {
       {isMember && (
         <section className="space-y-2">
           <h3 className="text-base font-semibold">Manager</h3>
-          <p className="text-sm text-muted-foreground">
-            Assign a manager (L4) for this member. Changes save immediately.
-          </p>
+          <p className="text-sm">Assign a manager (L4) for this member. Changes save immediately.</p>
 
-          <div className="max-w-md">
+          <div className="flex items-center gap-2">
             <select
+              className="rounded-lg border px-3 py-2"
               value={currentSupervisorId ?? ""}
-              disabled={!canAssign || mgrLoading || mgrSaving || busy}
               onChange={onSupervisorChange}
-              className="w-full rounded-md border px-3 py-2 text-sm"
+              disabled={!canAssign || mgrLoading || mgrSaving}
             >
               {/* None option */}
               <option value="">{mgrLoading ? "Loading…" : "— None —"}</option>
@@ -262,28 +305,24 @@ export default function ManageUserClient(props: Props) {
                 </option>
               ))}
             </select>
-
-            {mgrError && <div className="mt-2 text-sm text-destructive">{mgrError}</div>}
           </div>
+
+          {mgrError && <p className="text-sm text-red-600">{mgrError}</p>}
         </section>
       )}
 
       {/* Danger zone */}
-      <section className="space-y-3">
+      <section className="space-y-2">
         <h3 className="text-base font-semibold">Delete user</h3>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm">
           Soft delete only: membership is marked deleted and hidden from lists.
         </p>
-        <Button
-          variant="destructive"
-          disabled={!canDeleteUser || busy}
-          onClick={onDelete}
-          className="w-fit"
-        >
+
+        <Button variant="destructive" onClick={onDelete} disabled={!canDeleteUser || busy}>
           Delete
         </Button>
 
-        {error && <div className="text-sm text-destructive">{error}</div>}
+        {error && <p className="text-sm text-red-600">{error}</p>}
       </section>
     </div>
   );
