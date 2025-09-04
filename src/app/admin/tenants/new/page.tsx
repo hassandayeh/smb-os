@@ -2,10 +2,11 @@
 import { requireAccess } from "@/lib/guard-page"; // ✅ Keystone guard
 import NewTenantClient from "./NewTenantClient";
 
+/**
+ * Admin → Tenants → New
+ * Guarded server component that renders the client form.
+ */
 export default async function NewTenantPage() {
-  // Keystone compliance: enforce platform admin guard
   await requireAccess();
-
-  // Render client component (form)
   return <NewTenantClient />;
 }

@@ -2,15 +2,25 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, FormEvent } from "react";
+import { useEffect, useState } from "react";
+import { useI18n } from "@/lib/i18n";
 
 type SortOption = { value: string; label: string };
 
+/**
+ * Props — supports both legacy and new naming for back-compat.
+ */
 interface Props {
-  qInitial: string;
-  sortInitial: string;
+  // Preferred naming
+  qInitial?: string;
+  sortInitial?: string;
+
+  // Legacy naming (still supported)
+  currentQ?: string;
+  currentSort?: string;
+  currentStatus?: string; // ignored (status comes from URL, but kept to avoid prop warnings)
+
   sortOptions: SortOption[];
-  /** Debounce delay in ms (default 500) */
   delay?: number;
 }
 
@@ -19,66 +29,62 @@ export default function SearchSortBar({
   sortInitial,
   sortOptions,
   delay = 500,
+  currentQ,
+  currentSort,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
+  const { t } = useI18n();
+
+  // Resolve initial values from either prop set
+  const initialQ = qInitial ?? currentQ ?? "";
+  const initialSort = sortInitial ?? currentSort ?? "";
 
   // Local UI state
-  const [q, setQ] = useState(qInitial);
-  const [sort, setSort] = useState(sortInitial);
-  // Status remains supported if present in the URL; no “Apply” button—auto sync.
-  const statusFromUrl = sp.get("status") ?? "";
+  const [q, setQ] = useState(initialQ);
+  const [sort, setSort] = useState(initialSort);
 
-  // Debounce search text
-  const timer = useRef<number | null>(null);
-  const schedulePush = useCallback(
-    (nextQ: string, nextSort: string) => {
-      if (timer.current) window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => {
-        const params = new URLSearchParams(sp?.toString());
-        // keep existing status if present
-        if (nextQ) params.set("q", nextQ);
-        else params.delete("q");
-        if (nextSort) params.set("sort", nextSort);
-        else params.delete("sort");
-        if (statusFromUrl) params.set("status", statusFromUrl);
-        const qs = params.toString();
-        router.push(qs ? `${pathname}?${qs}` : pathname);
-      }, delay);
-    },
-    [router, pathname, sp, delay, statusFromUrl]
-  );
+  // Keep in sync with parent updates
+  useEffect(() => setQ(initialQ), [initialQ]);
+  useEffect(() => setSort(initialSort), [initialSort]);
 
-  // Sync if initial props change (SSR→CSR hydration)
-  useEffect(() => setQ(qInitial), [qInitial]);
-  useEffect(() => setSort(sortInitial), [sortInitial]);
+  // Apply search query (debounced)
+  useEffect(() => {
+    const h = setTimeout(() => {
+      const params = new URLSearchParams(sp as any);
+      if (q) params.set("q", q);
+      else params.delete("q");
+      params.delete("page"); // reset paging
+      router.push(`${pathname}?${params.toString()}`);
+    }, delay);
+    return () => clearTimeout(h);
+  }, [q, delay, pathname, router, sp]);
 
-  // Handlers
-  function onChangeQ(e: React.ChangeEvent<HTMLInputElement>) {
-    const next = e.target.value;
-    setQ(next);
-    schedulePush(next, sort);
-  }
-
-  function onChangeSort(e: React.ChangeEvent<HTMLSelectElement>) {
-    const next = e.target.value;
-    setSort(next);
-    schedulePush(q, next);
-  }
+  // Apply sort instantly
+  useEffect(() => {
+    if (!sort) return;
+    const params = new URLSearchParams(sp as any);
+    params.set("sort", sort);
+    router.push(`${pathname}?${params.toString()}`);
+  }, [sort, pathname, router, sp]);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      {/* Search box */}
       <input
-        placeholder="Search by name or ID..."
-        className="h-9 min-w-[240px] rounded-md border px-3 text-sm"
+        type="search"
+        placeholder={t("search.placeholder.tenants")}
         value={q}
-        onChange={onChangeQ}
+        onChange={(e) => setQ(e.target.value)}
+        className="w-full rounded-md border px-3 py-1.5 text-sm shadow-sm sm:max-w-xs"
       />
+
+      {/* Sort dropdown (labels already translated by the server page) */}
       <select
-        className="h-9 rounded-md border px-2 text-sm"
         value={sort}
-        onChange={onChangeSort}
+        onChange={(e) => setSort(e.target.value)}
+        className="rounded-md border px-2 py-1.5 text-sm shadow-sm"
       >
         {sortOptions.map((o) => (
           <option key={o.value} value={o.value}>
@@ -86,7 +92,6 @@ export default function SearchSortBar({
           </option>
         ))}
       </select>
-      {/* No Type dropdown, no Apply button */}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+// src/messages/ar.ts
 import type { Messages } from "@/lib/i18n";
 
 export const ar: Messages = {
@@ -16,10 +17,10 @@ export const ar: Messages = {
   "language.english": "الإنجليزية",
   "language.arabic": "العربية",
 
-
   // Status
   "status.active": "نشط",
   "status.inactive": "غير نشط",
+  "status.suspended": "موقوف",
 
   // SubmitButton
   "submit.saving": "جارٍ الحفظ…",
@@ -35,18 +36,19 @@ export const ar: Messages = {
   "audit.actions.entitlement.update": "تم تحديث الصلاحية",
   "audit.actions.user.entitlement.update": "تم تحديث صلاحية المستخدم",
 
-  // Settings (Horizon polish, upcoming)
+  // Settings
   "settings.saved": "تم حفظ الإعدادات",
   "settings.saveFailed": "تعذر حفظ الإعدادات",
 
-    // Header (impersonation)
+  // Header (impersonation)
   "header.previewAs": "المعاينة كـ",
   "header.clearPreview": "إلغاء",
   "header.signedInAs": "تسجيل الدخول باسم",
   "banner.returnToAdmin": "العودة إلى المشرف",
   "banner.viewingAs": "تسجيل العرض باسم",
 
-    "errors.params.required": "معلمات مفقودة أو غير صالحة.",
+  // Errors
+  "errors.params.required": "معلمات مفقودة أو غير صالحة.",
   "errors.auth": "ممنوع (المصادقة).",
   "errors.self_delete": "لا يمكنك حذف حسابك الخاص.",
   "errors.user.not_found_in_tenant": "المستخدم غير موجود في المستأجر.",
@@ -55,11 +57,51 @@ export const ar: Messages = {
   "errors.membership.lastL3.forbidden": "لا يمكنك إزالة آخر مشرف مستأجر نشط.",
   "errors.membership.demote_lastL3.forbidden": "لا يمكنك خفض رتبة آخر مشرف مستأجر نشط.",
 
+  // Users / Supervisor
   "users.manager.label": "المدير",
   "users.manager.none": "لا يوجد مدير",
   "users.manager.assign.success": "تم تحديث المدير.",
   "users.manager.assign.error": "تعذر تحديث المدير.",
 
+  // =========================
+  // Admin → Tenants (list)
+  // =========================
+  "admin.tenants.title": "المستأجرون",
+  "admin.console": "لوحة الإدارة",
+  "actions.exportCsv": "تصدير CSV",
 
+  // Sort labels
+  "tenants.sort.newestFirst": "الأحدث أولًا",
+  "tenants.sort.oldestFirst": "الأقدم أولًا",
+  "tenants.sort.activationLatest": "التفعيل (الأحدث)",
+  "tenants.sort.activationEarliest": "التفعيل (الأقدم)",
+  "tenants.sort.nameAsc": "الاسم أ → ي",
+  "tenants.sort.nameDesc": "الاسم ي → أ",
+
+  // Table headers
+  "table.name": "الاسم",
+  "table.id": "المعرّف",
+  "table.status": "الحالة",
+  "table.activatedUntil": "مُفعّل حتى",
+  "table.created": "تاريخ الإنشاء",
+  "table.actions": "الإجراءات",
+
+  // Empty & summary states
+  "tenants.summary.query": "إظهار {count} نتيجة{suffix} لعبارة “{q}”",
+  "tenants.summary.noQuery": "إظهار {count} مستأجر{suffix}",
+  "tenants.empty.query": "لا توجد مستأجرات تطابق “{q}”.",
+  "tenants.empty.noQuery": "لا توجد مستأجرات بعد.",
+  "actions.clearSearch": "مسح البحث",
+
+  // Pagination
+  "pagination.pageOf": "الصفحة {page} من {totalPages}",
+  "pagination.first": "الأولى",
+  "pagination.prev": "السابق",
+  "pagination.next": "التالي",
+  "pagination.last": "الأخيرة",
+
+  // Row actions
+  "actions.entitlements": "الصلاحيات",
+  "search.placeholder.tenants": "ابحث عن المستأجرين…",
 
 };

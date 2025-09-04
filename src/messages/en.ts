@@ -1,9 +1,10 @@
+// src/messages/en.ts
 import type { Messages } from '@/lib/i18n';
 
 export const en: Messages = {
   // Generic actions
   'actions.save': 'Save',
-  "savedBanner.saved": "Saved.",
+  'savedBanner.saved': 'Saved.',
   'actions.cancel': 'Cancel',
   'actions.close': 'Close',
   'actions.delete': 'Delete',
@@ -19,6 +20,7 @@ export const en: Messages = {
   // Status
   'status.active': 'Active',
   'status.inactive': 'Inactive',
+  'status.suspended': 'Suspended',
 
   // SubmitButton (Phase 0 ready)
   'submit.saving': 'Saving…',
@@ -38,15 +40,14 @@ export const en: Messages = {
   'settings.saved': 'Settings saved',
   'settings.saveFailed': 'Could not save settings',
 
-    // Header (impersonation)
+  // Header (impersonation)
   "header.previewAs": "Previewing as",
   "header.clearPreview": "Clear",
   "header.signedInAs": "Signed in as",
-    "banner.returnToAdmin": "Return to admin",
+  "banner.returnToAdmin": "Return to admin",
   "banner.viewingAs": "Viewing as",
 
-
-  // src/messages/en.ts
+  // Errors
   "errors.params.required": "Missing or invalid parameters.",
   "errors.auth": "Forbidden (auth).",
   "errors.self_delete": "You cannot delete your own account.",
@@ -56,16 +57,51 @@ export const en: Messages = {
   "errors.membership.lastL3.forbidden": "You cannot remove the last active Tenant Admin.",
   "errors.membership.demote_lastL3.forbidden": "You cannot demote the last active Tenant Admin.",
 
+  // Users / Supervisor
   "users.manager.label": "Manager",
   "users.manager.none": "No manager",
   "users.manager.assign.success": "Manager updated.",
   "users.manager.assign.error": "Couldn't update manager.",
 
+  // =========================
+  // Admin → Tenants (list)
+  // =========================
+  "admin.tenants.title": "Tenants",
+  "admin.console": "Admin Console",
+  "actions.exportCsv": "Export CSV",
 
+  // Sort labels
+  "tenants.sort.newestFirst": "Newest first",
+  "tenants.sort.oldestFirst": "Oldest first",
+  "tenants.sort.activationLatest": "Activation (latest)",
+  "tenants.sort.activationEarliest": "Activation (earliest)",
+  "tenants.sort.nameAsc": "Name A → Z",
+  "tenants.sort.nameDesc": "Name Z → A",
 
+  // Table headers
+  "table.name": "Name",
+  "table.id": "ID",
+  "table.status": "Status",
+  "table.activatedUntil": "Activated Until",
+  "table.created": "Created",
+  "table.actions": "Actions",
 
+  // Empty & summary states
+  "tenants.summary.query": "Showing {count} result{suffix} for “{q}”",
+  "tenants.summary.noQuery": "Showing {count} tenant{suffix}",
+  "tenants.empty.query": "No tenants matched “{q}”.",
+  "tenants.empty.noQuery": "No tenants yet.",
+  "actions.clearSearch": "Clear search",
+
+  // Pagination
+  "pagination.pageOf": "Page {page} of {totalPages}",
+  "pagination.first": "First",
+  "pagination.prev": "Prev",
+  "pagination.next": "Next",
+  "pagination.last": "Last",
+
+  // Row actions (kept generic for reuse)
+  "actions.entitlements": "Entitlements",
+  "search.placeholder.tenants": "Search tenants…",
 
 };
-
-
-
