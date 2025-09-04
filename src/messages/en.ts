@@ -3,6 +3,7 @@ import type { Messages } from '@/lib/i18n';
 export const en: Messages = {
   // Generic actions
   'actions.save': 'Save',
+  "savedBanner.saved": "Saved.",
   'actions.cancel': 'Cancel',
   'actions.close': 'Close',
   'actions.delete': 'Delete',
@@ -43,6 +44,25 @@ export const en: Messages = {
   "header.signedInAs": "Signed in as",
     "banner.returnToAdmin": "Return to admin",
   "banner.viewingAs": "Viewing as",
+
+
+  // src/messages/en.ts
+  "errors.params.required": "Missing or invalid parameters.",
+  "errors.auth": "Forbidden (auth).",
+  "errors.self_delete": "You cannot delete your own account.",
+  "errors.user.not_found_in_tenant": "User not found in tenant.",
+  "errors.membership.not_found_or_deleted": "Membership not found or already deleted.",
+  "errors.user.delete_failed": "Failed to delete user.",
+  "errors.membership.lastL3.forbidden": "You cannot remove the last active Tenant Admin.",
+  "errors.membership.demote_lastL3.forbidden": "You cannot demote the last active Tenant Admin.",
+
+  "users.manager.label": "Manager",
+  "users.manager.none": "No manager",
+  "users.manager.assign.success": "Manager updated.",
+  "users.manager.assign.error": "Couldn't update manager.",
+
+
+
 
 
 };
