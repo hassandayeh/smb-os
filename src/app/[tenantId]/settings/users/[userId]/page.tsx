@@ -78,7 +78,6 @@ export default async function ManageUserPage({
     where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
     select: { role: true, isActive: true, deletedAt: true },
   });
-
   if (!membership || membership.deletedAt) {
     notFound(); // soft-deleted or no membership
   }
@@ -90,9 +89,24 @@ export default async function ManageUserPage({
   const [actorLevel, roleDecision, statusDecision, deleteDecision] =
     await Promise.all([
       getActorLevel(actorUserId!, tenantId), // L1–L5 or null
-      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "role" }),
-      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "status" }),
-      canManageUserGeneral({ tenantId, actorUserId: actorUserId!, targetUserId, intent: "delete" }),
+      canManageUserGeneral({
+        tenantId,
+        actorUserId: actorUserId!,
+        targetUserId,
+        intent: "role",
+      }),
+      canManageUserGeneral({
+        tenantId,
+        actorUserId: actorUserId!,
+        targetUserId,
+        intent: "status",
+      }),
+      canManageUserGeneral({
+        tenantId,
+        actorUserId: actorUserId!,
+        targetUserId,
+        intent: "delete",
+      }),
     ]);
 
   const isSelf = actorUserId === targetUserId;
@@ -105,9 +119,7 @@ export default async function ManageUserPage({
   const canDeleteUser = deleteDecision.allowed;
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Manage user</h1>
-
+    <div className="space-y-8">
       <ManageUserClient
         tenantId={tenantId}
         userId={targetUserId}
