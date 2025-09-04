@@ -70,14 +70,14 @@ export default function SearchSortBar({
   }, [sort, pathname, router, sp]);
 
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
       {/* Search box */}
       <input
-        type="search"
-        placeholder={t("search.placeholder.tenants")}
         value={q}
         onChange={(e) => setQ(e.target.value)}
         className="w-full rounded-md border px-3 py-1.5 text-sm shadow-sm sm:max-w-xs"
+        placeholder={t("search.placeholder.tenants")}
+        aria-label={t("search.aria.searchTenants")}
       />
 
       {/* Sort dropdown (labels already translated by the server page) */}
@@ -85,6 +85,7 @@ export default function SearchSortBar({
         value={sort}
         onChange={(e) => setSort(e.target.value)}
         className="rounded-md border px-2 py-1.5 text-sm shadow-sm"
+        aria-label={t("search.aria.sortBy")}
       >
         {sortOptions.map((o) => (
           <option key={o.value} value={o.value}>

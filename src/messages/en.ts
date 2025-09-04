@@ -70,17 +70,21 @@ export const en: Messages = {
 
   "admin.tenants.title": "Tenants",
   "admin.console": "Admin Console",
+'tenants.word': 'tenants',
 
   "actions.exportCsv": "Export CSV",
 
   "actions.entitlements": "Entitlements",
   "actions.clearSearch": "Clear search",
 
-  "tenants.summary.query": "{count} tenant{suffix} found for “{q}”",
-  "tenants.summary.noQuery": "{count} tenant{suffix} total",
+  'tenants.summary.noQuery': '{count} tenants',
+  'tenants.summary.query': '{count} tenants for “{q}”',
   "tenants.empty.query": "No tenants found for “{q}”.",
   "tenants.empty.noQuery": "No tenants available.",
 
+
+
+  
   "tenants.sort.newestFirst": "Newest first",
   "tenants.sort.oldestFirst": "Oldest first",
   "tenants.sort.activationLatest": "Latest activation",
@@ -101,7 +105,10 @@ export const en: Messages = {
   "pagination.next": "Next",
   "pagination.last": "Last",
 
-  "search.placeholder.tenants": "Search tenants..."
+  "search.placeholder.tenants": "Search tenants...",
 
-  
+    'actions.createTenant': 'Create tenant',
+  'search.aria.searchTenants': 'Search tenants',
+  'search.aria.sortBy': 'Sort by',
+
 };

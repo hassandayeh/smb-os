@@ -68,14 +68,15 @@ export const ar: Messages = {
 
   "admin.tenants.title": "المستأجرون",
   "admin.console": "لوحة التحكم",
+'tenants.word': 'المستأجرين',
 
   "actions.exportCsv": "تصدير CSV",
 
   "actions.entitlements": "الصلاحيات",
   "actions.clearSearch": "مسح البحث",
 
-  "tenants.summary.query": "تم العثور على {count} مستأجر{suffix} لـ “{q}”",
-  "tenants.summary.noQuery": "{count} مستأجر{suffix} إجمالي",
+  'tenants.summary.noQuery': '{count} المستأجرين',
+  'tenants.summary.query': '{count} من المستأجرين لِـ “{q}”',
   "tenants.empty.query": "لا يوجد مستأجرون لـ “{q}”.",
   "tenants.empty.noQuery": "لا يوجد مستأجرون.",
 
@@ -99,7 +100,10 @@ export const ar: Messages = {
   "pagination.next": "التالي",
   "pagination.last": "الأخيرة",
 
-  "search.placeholder.tenants": "ابحث عن مستأجرين..."
+  "search.placeholder.tenants": "ابحث عن مستأجرين...",
 
+  'actions.createTenant': 'إنشاء جهة',
+  'search.aria.searchTenants': 'بحث في الجهات',
+  'search.aria.sortBy': 'ترتيب حسب',
 
 };

@@ -3,17 +3,37 @@ import CreateTenantButton from "./CreateTenantButton";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import Link from "next/link";
-import SearchSortBar from "./search-sort-bar"; // client component
-import { requireAccess } from "@/lib/guard-page"; // ✅ Keystone admin guard
-import { Button } from "@/components/ui/button"; // ✅ Styled actions
-import { getTServer } from "@/lib/i18n-server"; // ✅ Server-side i18n
-import { containsInsensitive } from "@/lib/db/search"; // ✅ PG-safe text search
+import SearchSortBar from "./search-sort-bar";
+import { requireAccess } from "@/lib/guard-page";
+import { Button } from "@/components/ui/button";
+import { containsInsensitive } from "@/lib/db/search";
+import { cookies } from "next/headers";
 
-// ⬇️ CHANGE 1: fmtDate now receives `t` and uses the i18n fallback key
-function fmtDate(
-  d: Date | null,
-  t: (key: string, params?: Record<string, unknown>) => string
-) {
+// Server i18n via catalogs (matches layout cookie contract)
+import { en } from "@/messages/en";
+import { ar } from "@/messages/ar";
+
+type TFunc = (key: string, params?: Record<string, unknown>) => string;
+
+const getServerT = async (): Promise<{ t: TFunc }> => {
+  const cookieStore = await cookies();
+  const cookieLocale = cookieStore.get("ui.locale")?.value;
+  const locale = cookieLocale === "ar" ? "ar" : "en";
+  const messages = locale === "ar" ? ar : en;
+
+  const t: TFunc = (key, params) => {
+    const msg = (messages as any)[key];
+    if (msg == null) return key; // dev-friendly fallback
+    if (!params) return msg as string;
+    return Object.keys(params).reduce((acc, k) => {
+      return acc.replace(new RegExp(`\\{${k}\\}`, "g"), String(params[k]));
+    }, msg as string);
+  };
+
+  return { t };
+};
+
+function fmtDate(d: Date | null, t: TFunc) {
   if (!d) return t("date.fallback");
   try {
     return new Intl.DateTimeFormat(undefined, {
@@ -52,7 +72,6 @@ function getOrder(sort: SortKey): Prisma.TenantOrderByWithRelationInput[] {
   }
 }
 
-// NOTE: labels are i18n keys (resolved later with t())
 const sortOptions = [
   { value: "created_desc", label: "tenants.sort.newestFirst" },
   { value: "created_asc", label: "tenants.sort.oldestFirst" },
@@ -62,7 +81,6 @@ const sortOptions = [
   { value: "name_desc", label: "tenants.sort.nameDesc" },
 ] as const;
 
-/* -------------------- PAGINATION -------------------- */
 const PAGE_SIZE = 20;
 
 function getPage(sp?: Record<string, unknown>) {
@@ -83,8 +101,8 @@ function PaginationFooter({
   totalPages: number;
   q: string;
   sort: SortKey;
-  status: string; // "" | "ACTIVE" | "SUSPENDED"
-  t: (key: string, params?: Record<string, unknown>) => string;
+  status: string;
+  t: TFunc;
 }) {
   const makeHref = (p: number) => {
     const params = new URLSearchParams();
@@ -95,9 +113,9 @@ function PaginationFooter({
     const qs = params.toString();
     return qs ? `?${qs}` : "?";
   };
-
   const prev = Math.max(1, page - 1);
   const next = Math.min(totalPages, page + 1);
+
   const btn =
     "inline-flex items-center rounded-md border px-3 py-1.5 text-sm hover:bg-muted";
 
@@ -106,24 +124,23 @@ function PaginationFooter({
       <div className="text-sm">
         {t("pagination.pageOf", { page, totalPages })}
       </div>
-      <div className="space-x-2">
-        <Link className={btn} href={makeHref(1)}>
+      <div className="flex items-center gap-2">
+        <Link className={btn} href={makeHref(1)} aria-label={t("pagination.first")}>
           « {t("pagination.first")}
         </Link>
-        <Link className={btn} href={makeHref(prev)}>
+        <Link className={btn} href={makeHref(prev)} aria-label={t("pagination.prev")}>
           ‹ {t("pagination.prev")}
         </Link>
-        <Link className={btn} href={makeHref(next)}>
+        <Link className={btn} href={makeHref(next)} aria-label={t("pagination.next")}>
           {t("pagination.next")} ›
         </Link>
-        <Link className={btn} href={makeHref(totalPages)}>
+        <Link className={btn} href={makeHref(totalPages)} aria-label={t("pagination.last")}>
           {t("pagination.last")} »
         </Link>
       </div>
     </div>
   );
 }
-/* ------------------ END PAGINATION ------------------ */
 
 function statusLabel(raw: string, t: (k: string) => string) {
   switch (raw) {
@@ -139,48 +156,35 @@ function statusLabel(raw: string, t: (k: string) => string) {
 export default async function TenantsAdminPage({
   searchParams,
 }: {
-  // In this Next.js version, searchParams is async.
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+  searchParams?: Promise<Record<string, unknown>>;
 }) {
-  // ✅ Keystone compliance: guard at the very top (admin area)
   await requireAccess();
 
-  // i18n for server
-  const { t } = await getTServer();
+  const { t } = await getServerT();
 
-  // ✅ Await once, then use `sp` everywhere.
   const sp = (await searchParams) ?? {};
   const q = (typeof sp.q === "string" ? sp.q : "").trim();
-
   const sort =
     typeof sp.sort === "string" &&
     sortOptions.some((o) => o.value === (sp.sort as SortKey))
       ? (sp.sort as SortKey)
       : "created_desc";
 
-  // Status (accepts any case)
   const rawStatus = typeof sp.status === "string" ? sp.status : "";
-  const status = rawStatus.trim().toUpperCase(); // "" | "ACTIVE" | "SUSPENDED"
+  const status = rawStatus.trim().toUpperCase();
 
-  // Build Prisma where (PG-ready via centralized helper)
   const where: Prisma.TenantWhereInput = {};
   if (q) {
-    where.OR = [
-      containsInsensitive("name", q),
-      containsInsensitive("id", q),
-    ] as any;
+    where.OR = [containsInsensitive("name", q), containsInsensitive("id", q)] as any;
   }
   if (status === "ACTIVE" || status === "SUSPENDED") {
     where.status = status as any;
   }
 
-  // Pagination
   const page = getPage(sp);
   const skip = (page - 1) * PAGE_SIZE;
   const take = PAGE_SIZE;
 
-  // ✅ IMPORTANT: no stray code after the return of this function
-  // Count + list
   const totalCount = await prisma.tenant.count({ where });
   const tenants = await prisma.tenant.findMany({
     where,
@@ -198,7 +202,6 @@ export default async function TenantsAdminPage({
     },
   });
 
-  // Export href (preserve q/sort/status)
   const exportHref = (() => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
@@ -215,102 +218,71 @@ export default async function TenantsAdminPage({
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t("admin.tenants.title")}
-        </h1>
+    <main className="p-4 sm:p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-xl font-semibold">{t("admin.tenants.title")}</h1>
         <div className="flex items-center gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/admin">{t("admin.console")}</Link>
-          </Button>
-          <Button asChild variant="secondary" size="sm">
-            <Link href={exportHref}>{t("actions.exportCsv")}</Link>
-          </Button>
+          <Link
+            href={exportHref}
+            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bgMuted hover:bg-muted"
+          >
+            {t("actions.exportCsv")}
+          </Link>
           <CreateTenantButton />
         </div>
       </div>
 
-      {/* Search + Sort */}
-      <SearchSortBar
-        currentSort={sort}
-        sortOptions={sortOptionsForUI as any}
-        currentQ={q}
-        // status filter plumbing remains as-is (read from URL)
-        currentStatus={status}
-      />
-
-      {/* Summary */}
-      <div className="text-sm text-muted-foreground">
-        {q ? (
-          <>
-            {t("tenants.summary.query", {
-              count: tenants.length,
-              suffix: tenants.length === 1 ? "" : "s",
-              q,
-            })}
-          </>
-        ) : (
-          <>
-            {t("tenants.summary.noQuery", {
-              count: tenants.length,
-              suffix: tenants.length === 1 ? "" : "s",
-            })}
-          </>
-        )}
+      <div className="mb-3">
+        <SearchSortBar qInitial={q} sortInitial={sort} sortOptions={sortOptionsForUI} />
       </div>
 
-      {/* Table */}
-      <div className="overflow-hidden rounded-2xl border">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-muted/50">
-            <tr className="[&>th]:px-4 [&>th]:py-2 [&>th]:font-medium">
-              <th>{t("table.name")}</th>
-              <th>{t("table.id")}</th>
-              <th>{t("table.status")}</th>
-              <th>{t("table.activatedUntil")}</th>
-              <th>{t("table.created")}</th>
-              <th className="text-right">{t("table.actions")}</th>
-            </tr>
-          </thead>
-          <tbody className="[&>tr]:border-t">
-            {tenants.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-6 text-center text-muted-foreground"
-                >
-                  {q ? (
-                    <>
-                      {t("tenants.empty.query", { q })}{" "}
-                      <Link href="/admin/tenants" className="underline">
-                        {t("actions.clearSearch")}
-                      </Link>
-                      .
-                    </>
-                  ) : (
-                    t("tenants.empty.noQuery")
-                  )}
-                </td>
-              </tr>
+      <div className="mb-3 text-sm text-muted-foreground">
+        {q
+          ? t("tenants.summary.query", { count: tenants.length, q })
+          : t("tenants.summary.noQuery", { count: tenants.length })}
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border">
+        {tenants.length === 0 ? (
+          <div className="p-6 text-sm">
+            {q ? (
+              <>
+                {t("tenants.empty.query", { q })}{" "}
+                <Link href="?q=" className="underline underline-offset-2">
+                  {t("actions.clearSearch")}
+                </Link>
+                .
+              </>
             ) : (
-              tenants.map((tnt) => (
-                <tr key={tnt.id} className="[&>td]:px-4 [&>td]:py-2">
-                  <td>{tnt.name}</td>
-                  <td className="font-mono">{tnt.id}</td>
-                  <td className="uppercase">{statusLabel(tnt.status, t)}</td>
-                  {/* ⬇️ CHANGE 2 & 3: pass `t` to fmtDate */}
-                  <td>{fmtDate(tnt.activatedUntil, t)}</td>
-                  <td>{fmtDate(tnt.createdAt, t)}</td>
-                  <td className="text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button asChild variant="ghost" size="sm">
-                        <Link href={`/admin/tenants/${tnt.id}`}>
-                          {t("actions.manage")}
-                        </Link>
+              t("tenants.empty.noQuery")
+            )}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-muted/30 text-left">
+              <tr>
+                <th className="px-3 py-2">{t("table.name")}</th>
+                <th className="px-3 py-2">{t("table.id")}</th>
+                <th className="px-3 py-2">{t("table.status")}</th>
+                <th className="px-3 py-2">{t("table.activatedUntil")}</th>
+                <th className="px-3 py-2">{t("table.created")}</th>
+                <th className="px-3 py-2">{t("table.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tenants.map((tnt) => (
+                <tr key={tnt.id} className="border-t">
+                  <td className="px-3 py-2">{tnt.name}</td>
+                  <td className="px-3 py-2">{tnt.id}</td>
+                  <td className="px-3 py-2">{statusLabel(tnt.status, t)}</td>
+                  <td className="px-3 py-2">{fmtDate(tnt.activatedUntil, t)}</td>
+                  <td className="px-3 py-2">{fmtDate(tnt.createdAt, t)}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex gap-2">
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/admin/tenants/${tnt.id}`}>{t("actions.manage")}</Link>
                       </Button>
-                      <Button asChild variant="ghost" size="sm">
+                      <Button asChild size="sm" variant="secondary">
                         <Link href={`/admin/tenants/${tnt.id}/entitlements`}>
                           {t("actions.entitlements")}
                         </Link>
@@ -318,13 +290,12 @@ export default async function TenantsAdminPage({
                     </div>
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
-      {/* Pagination */}
       <PaginationFooter
         page={page}
         totalPages={totalPages}
@@ -333,6 +304,6 @@ export default async function TenantsAdminPage({
         status={status}
         t={t}
       />
-    </div>
+    </main>
   );
 }
