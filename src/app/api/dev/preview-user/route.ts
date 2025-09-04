@@ -15,12 +15,29 @@ function getRedirect(req: Request, fallback = "/admin") {
   return qp || referer || fallback;
 }
 
-/**
- * POST: set preview (impersonation) cookie after Keystone rule check.
- * Accepts JSON or form-encoded body:
- *  - userId: string (required)
- *  - redirectTo?: string
- */
+/** Decide the "home" for the impersonated user. */
+async function resolveAutoRedirect(targetUserId: string) {
+  // Platform roles? → /admin
+  const platform = await prisma.appRole.findMany({
+    where: { userId: targetUserId },
+    select: { role: true },
+  });
+  const pset = new Set(platform.map((r) => r.role));
+  if (pset.has("DEVELOPER") || pset.has("APP_ADMIN")) return "/admin";
+
+  // Otherwise pick their active tenant (any) and send to workspace root
+  const m = await prisma.tenantMembership.findFirst({
+    where: { userId: targetUserId, isActive: true, deletedAt: null },
+    select: { tenantId: true, role: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (m?.tenantId) return `/${m.tenantId}`;
+
+  // Fallback
+  return "/admin";
+}
+
+/** POST: set preview user cookie (impersonate) */
 export async function POST(req: Request) {
   const actorId = await getSessionUserId();
   if (!actorId) {
@@ -29,16 +46,16 @@ export async function POST(req: Request) {
 
   const ct = req.headers.get("content-type") || "";
   let userId = "";
-  let redirectTo = "/admin";
+  let redirectTo: string | "auto" = "/admin";
 
   if (ct.includes("application/x-www-form-urlencoded")) {
     const form = await req.formData();
     userId = String(form.get("userId") ?? "");
-    redirectTo = String(form.get("redirectTo") ?? getRedirect(req));
+    redirectTo = (String(form.get("redirectTo") ?? getRedirect(req)) as any) || "/admin";
   } else if (ct.includes("application/json")) {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     userId = String(body["userId"] ?? "");
-    redirectTo = String(body["redirectTo"] ?? getRedirect(req));
+    redirectTo = (String(body["redirectTo"] ?? getRedirect(req)) as any) || "/admin";
   }
 
   if (!userId) {
@@ -47,10 +64,8 @@ export async function POST(req: Request) {
 
   const target = await prisma.user.findUnique({
     where: { id: userId },
-    // NOTE: keep schema-safe (no supervisorId assumption)
     select: { id: true, tenantId: true },
   });
-
   if (!target) {
     if (ct.includes("application/x-www-form-urlencoded")) {
       return NextResponse.redirect(
@@ -75,16 +90,19 @@ export async function POST(req: Request) {
     );
   }
 
-  // Set the preview cookie and redirect.
+  // If caller asked for auto, compute the role-aware home
+  if (redirectTo === "auto") {
+    redirectTo = await resolveAutoRedirect(target.id);
+  }
+
   const res = NextResponse.redirect(new URL(redirectTo, req.url), { status: 303 });
   res.cookies.set(COOKIE, target.id, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 days
+    maxAge: 60 * 60 * 24 * 7,
   });
 
-  // Audit with string tenantId (DB-neutral; i18n-keyed)
   await writeAudit({
     tenantId: target.tenantId ?? "",
     actorUserId: actorId,
@@ -96,45 +114,53 @@ export async function POST(req: Request) {
   return res;
 }
 
-/**
- * DELETE: clear preview cookie.
- * Accepts optional ?redirectTo=… or uses Referer, else /admin.
- */
+/** DELETE: clear preview user cookie */
 export async function DELETE(req: Request) {
-  const actorId = await getSessionUserId();
-  if (!actorId) {
-    return NextResponse.json({ error: "errors.auth.required" }, { status: 401 });
-  }
+  // Make clearing robust even if session is missing.
+  const actorId = (await getSessionUserId()) || "";
 
   const redirectTo = getRedirect(req, "/admin");
   const res = NextResponse.redirect(new URL(redirectTo, req.url), { status: 303 });
-  res.cookies.set(COOKIE, "", {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
+  res.cookies.set(COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
 
-  // Audit with empty string tenantId (no specific tenant context here)
-  await writeAudit({
-    tenantId: "",
-    actorUserId: actorId,
-    action: "impersonation.clear",
-    req,
-  });
+  // Audit best-effort
+  try {
+    await writeAudit({
+      tenantId: "",
+      actorUserId: actorId,
+      action: "impersonation.clear",
+      req,
+    });
+  } catch {
+    // Swallow to ensure clear never 500s
+  }
 
   return res;
 }
 
-/**
- * GET: convenience handler to clear via link (?action=clear).
- * Otherwise responds 405 (method not allowed).
- */
+/** GET: clear via link (?action=clear) — handle inline (no call to DELETE) */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action");
   if (action !== "clear") {
     return NextResponse.json({ error: "errors.http.method_not_allowed" }, { status: 405 });
   }
-  return DELETE(req);
+
+  const actorId = (await getSessionUserId()) || "";
+  const redirectTo = getRedirect(req, "/admin");
+  const res = NextResponse.redirect(new URL(redirectTo, req.url), { status: 303 });
+  res.cookies.set(COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
+
+  try {
+    await writeAudit({
+      tenantId: "",
+      actorUserId: actorId,
+      action: "impersonation.clear",
+      req,
+    });
+  } catch {
+    // no-op
+  }
+
+  return res;
 }

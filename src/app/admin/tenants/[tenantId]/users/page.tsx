@@ -33,9 +33,8 @@ function TenantRolePill({
       : role === "MANAGER"
       ? "Manager (L4)"
       : "Member (L5)";
-
   return (
-    <span className="mr-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
+    <span className="mr-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset">
       {label}
     </span>
   );
@@ -92,9 +91,7 @@ export default async function TenantUsersPage({
 
   // Build user list helpers
   const userIds = users.map((u) => u.id);
-  const nameMap = new Map(
-    users.map((u) => [u.id, u.name || u.email || u.id])
-  );
+  const nameMap = new Map(users.map((u) => [u.id, u.name || u.email || u.id]));
 
   // Per-user entitlements (only for our module set)
   const userEnts = userIds.length
@@ -130,10 +127,16 @@ export default async function TenantUsersPage({
   // Tenant memberships (L3/L4/L5) — include supervisorId and exclude soft-deleted
   const memberships = userIds.length
     ? await prisma.tenantMembership.findMany({
-        where: { tenantId, userId: { in: userIds }, deletedAt: null, isActive: true },
+        where: {
+          tenantId,
+          userId: { in: userIds },
+          deletedAt: null,
+          isActive: true,
+        },
         select: { userId: true, role: true, supervisorId: true },
       })
     : [];
+
   const membershipMap = new Map<string, "TENANT_ADMIN" | "MANAGER" | "MEMBER">();
   const supervisorMap = new Map<string, string | null>();
   for (const m of memberships) {
@@ -154,6 +157,7 @@ export default async function TenantUsersPage({
   const actorUserId = await getCurrentUserId();
   let isPlatform = false;
   let actorIsL3Here = false;
+
   if (actorUserId) {
     const roles = await prisma.appRole.findMany({
       where: { userId: actorUserId },
@@ -182,9 +186,7 @@ export default async function TenantUsersPage({
   const backToTenantHref = qsStr
     ? `/admin/tenants/${tenantId}?${qsStr}`
     : `/admin/tenants/${tenantId}`;
-  const backToListHref = qsStr
-    ? `/admin/tenants?${qsStr}`
-    : `/admin/tenants`;
+  const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : `/admin/tenants`;
   const currentUrl = qsStr
     ? `/admin/tenants/${tenantId}/users?${qsStr}`
     : `/admin/tenants/${tenantId}/users`;
@@ -197,25 +199,17 @@ export default async function TenantUsersPage({
   return (
     <>
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Users</h1>
-        <div className="mt-1 text-sm text-muted-foreground">
+      <div className="mb-4">
+        <h1 className="text-xl font-semibold"># Users</h1>
+        <p className="text-sm opacity-80">
           Tenant: <span className="font-medium">{tenant?.name ?? tenantId}</span>
-        </div>
-
-        <div className="mt-3 flex gap-4 text-sm">
-          <Link href="/admin/tenants" className="text-primary hover:underline">
-            Admin Console
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Link href={backToListHref} className="underline">
+            Admin Console • Back to list
           </Link>
-          <span className="text-muted-foreground">•</span>
-          <Link href={backToListHref} className="text-primary hover:underline">
-            Back to list
-          </Link>
-          <span className="text-muted-foreground">•</span>
-          <Link
-            href={backToTenantHref}
-            className="text-primary hover:underline"
-          >
+          <span>•</span>
+          <Link href={backToTenantHref} className="underline">
             Manage Tenant
           </Link>
         </div>
@@ -224,31 +218,26 @@ export default async function TenantUsersPage({
       {/* Table */}
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted/50 text-left">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Name</th>
-                  <th className="px-4 py-3 font-medium">Email</th>
-                  <th className="px-4 py-3 font-medium">
-                    {isPlatformTenant ? "Platform role" : "Tenant role"}
-                  </th>
-                  <th className="px-4 py-3 font-medium">Supervisor</th>
-                  <th className="px-4 py-3 font-medium">Created</th>
-                  <th className="px-4 py-3 font-medium">Access</th>
-                  <th className="px-4 py-3 font-medium">Actions</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {users.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
-                      No users yet.
-                    </td>
+          {users.length === 0 ? (
+            <div className="p-6 text-sm">No users yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="h-10 border-b">
+                    <th className="px-3 text-left">Name</th>
+                    <th className="px-3 text-left">Email</th>
+                    <th className="px-3 text-left">
+                      {isPlatformTenant ? "Platform role" : "Tenant role"}
+                    </th>
+                    <th className="px-3 text-left">Supervisor</th>
+                    <th className="px-3 text-left">Created</th>
+                    <th className="px-3 text-left">Access</th>
+                    <th className="px-3 text-left">Actions</th>
                   </tr>
-                ) : (
-                  users.map((u) => {
+                </thead>
+                <tbody>
+                  {users.map((u) => {
                     const row = entMap.get(u.id)!;
                     const onCount = (
                       Object.keys(row) as (typeof MODULE_KEYS)[number][]
@@ -256,8 +245,7 @@ export default async function TenantUsersPage({
                     const total = MODULE_KEYS.length;
 
                     const tenantRole = membershipMap.get(u.id) ?? null;
-                    const currentSupervisorId =
-                      supervisorMap.get(u.id) ?? null;
+                    const currentSupervisorId = supervisorMap.get(u.id) ?? null;
                     const currentSupervisorName = currentSupervisorId
                       ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
                       : null;
@@ -276,19 +264,23 @@ export default async function TenantUsersPage({
                       !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
 
                     // Build links safely
-                    const previewHref = appendQuery(currentUrl, "preview", u.id);
-                    const clearHref = appendQuery(currentUrl, "clearPreview", 1);
+                    // (We keep these for back/forward consistency, but actions below are forms)
+                    const previewAction = "/api/dev/preview-user";
+                    const clearPreviewHref = appendQuery(
+                      "/api/dev/preview-user",
+                      "action",
+                      "clear"
+                    );
+
                     // Admin list → tenant-side Manage screen (existing surface)
                     const manageHref = `/${tenantId}/settings/users/${u.id}`;
 
                     return (
-                      <tr key={u.id} className="border-t border-border">
-                        <td className="px-4 py-3">{u.name ?? "—"}</td>
-                        <td className="px-4 py-3">{u.email ?? "—"}</td>
-
-                        <td className="px-4 py-3">
+                      <tr key={u.id} className="h-12 border-b align-middle">
+                        <td className="px-3">{u.name ?? "—"}</td>
+                        <td className="px-3">{u.email ?? "—"}</td>
+                        <td className="px-3">
                           {isPlatformTenant ? (
-                            // Platform roles can be shown elsewhere; keep as em dash here
                             "—"
                           ) : tenantRole ? (
                             <TenantRolePill role={tenantRole} />
@@ -296,8 +288,7 @@ export default async function TenantUsersPage({
                             "—"
                           )}
                         </td>
-
-                        <td className="px-4 py-3">
+                        <td className="px-3">
                           {isPlatformTenant
                             ? "—"
                             : tenantRole === "MEMBER"
@@ -306,42 +297,60 @@ export default async function TenantUsersPage({
                               : "None"
                             : "—"}
                         </td>
-
-                        <td className="px-4 py-3">{fmtDate(u.createdAt)}</td>
-
-                        <td className="px-4 py-3">
+                        <td className="px-3">{fmtDate(u.createdAt)}</td>
+                        <td className="px-3">
                           {onCount} / {total}
                         </td>
+                        <td className="px-3">
+                          <div className="flex flex-wrap gap-2">
+                            {/* Preview as (POST to set preview cookie) */}
+                            <form
+                              action={previewAction}
+                              method="POST"
+                              className="inline-block"
+                            >
+                              <input type="hidden" name="userId" value={u.id} />
+                              <input
+                                type="hidden"
+                                name="redirectTo"
+                                value="auto"
+                              />
+                              <SubmitButton size="sm" variant="secondary">
+                                Preview as
+                              </SubmitButton>
+                            </form>
 
-                        <td className="px-4 py-3">
-                          <div className="flex gap-2">
-                            <Button asChild variant="secondary" size="sm">
-                              <Link href={previewHref}>Preview as</Link>
-                            </Button>
+                            {/* Clear preview (GET with action=clear) */}
+                            <Link
+                              href={appendQuery(
+                                clearPreviewHref,
+                                "redirectTo",
+                                currentUrl
+                              )}
+                              className="underline"
+                            >
+                              Clear preview
+                            </Link>
 
+                            {/* Manage link */}
                             {!(!isPlatformTenant && hideManage) && (
-                              <Button asChild size="sm">
-                                <Link href={manageHref}>Manage</Link>
-                              </Button>
+                              <Link href={manageHref}>
+                                <Button size="sm" variant="default">
+                                  Manage
+                                </Button>
+                              </Link>
                             )}
                           </div>
                         </td>
                       </tr>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
-
-      {/* Clear Preview */}
-      <div className="mt-4">
-        <Link href={appendQuery(currentUrl, "clearPreview", 1)}>
-          Clear preview
-        </Link>
-      </div>
     </>
   );
 }
