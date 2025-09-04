@@ -5,6 +5,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import SubmitButton from "@/components/SubmitButton";
 import { getCurrentUserId } from "@/lib/current-user";
 import { Button } from "@/components/ui/button";
+import { cookies } from "next/headers";
+import { en } from "@/messages/en";
+import { ar } from "@/messages/ar";
 
 export const dynamic = "force-dynamic";
 
@@ -54,19 +57,21 @@ export default async function TenantUsersPage({
   params: { tenantId: string };
   searchParams?: { [k: string]: string | string[] | undefined };
 }) {
+  // i18n (flat catalogs)
+  const jar = await cookies();
+  const locale = jar.get("ui.locale")?.value === "ar" ? "ar" : "en";
+  const t = locale === "ar" ? ar : en;
+
   const { tenantId } = params;
 
-  // ---- Known modules (keep in sync with your module config) ----
   const MODULE_KEYS = ["inventory", "invoices"] as const;
 
-  // Load tenant (for header context) + users
   const [tenant, users] = await Promise.all([
     prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { id: true, name: true },
     }),
     prisma.user.findMany({
-      // SHOW ONLY users who still have a non-deleted membership in this tenant
       where: {
         tenantId,
         memberships: { some: { tenantId, deletedAt: null } },
@@ -78,22 +83,19 @@ export default async function TenantUsersPage({
         role: true,
         createdAt: true,
         username: true,
-        appRoles: { select: { role: true } }, // Platform role column
+        appRoles: { select: { role: true } },
       },
       orderBy: [{ createdAt: "desc" }],
     }),
   ]);
 
-  // Is this the Platform tenant?
   const isPlatformTenant =
     (tenant?.id ?? "").toLowerCase() === "platform" ||
     (tenant?.name ?? "").toLowerCase() === "platform";
 
-  // Build user list helpers
   const userIds = users.map((u) => u.id);
   const nameMap = new Map(users.map((u) => [u.id, u.name || u.email || u.id]));
 
-  // Per-user entitlements (only for our module set)
   const userEnts = userIds.length
     ? await prisma.userEntitlement.findMany({
         where: {
@@ -105,7 +107,6 @@ export default async function TenantUsersPage({
       })
     : [];
 
-  // Build lookup: map[userId][moduleKey] = boolean | undefined
   const entMap = new Map<
     string,
     Record<(typeof MODULE_KEYS)[number], boolean | undefined>
@@ -124,7 +125,6 @@ export default async function TenantUsersPage({
     if (row) row[e.moduleKey as (typeof MODULE_KEYS)[number]] = e.isEnabled;
   }
 
-  // Tenant memberships (L3/L4/L5) — include supervisorId and exclude soft-deleted
   const memberships = userIds.length
     ? await prisma.tenantMembership.findMany({
         where: {
@@ -144,7 +144,6 @@ export default async function TenantUsersPage({
     supervisorMap.set(m.userId, m.supervisorId ?? null);
   }
 
-  // Managers available as supervisors (same tenant)
   const managerIds = memberships
     .filter((m) => m.role === "MANAGER")
     .map((m) => m.userId);
@@ -153,7 +152,6 @@ export default async function TenantUsersPage({
     name: nameMap.get(id) ?? id,
   }));
 
-  // ---- Actor flags: platform? L3 here? (for UI rules) ----
   const actorUserId = await getCurrentUserId();
   let isPlatform = false;
   let actorIsL3Here = false;
@@ -167,14 +165,12 @@ export default async function TenantUsersPage({
     isPlatform = rset.has("DEVELOPER") || rset.has("APP_ADMIN");
 
     const m = await prisma.tenantMembership.findFirst({
-      // ignore soft-deleted rows for actor’s membership
       where: { tenantId, userId: actorUserId, deletedAt: null, isActive: true },
       select: { role: true, isActive: true },
     });
     actorIsL3Here = !!m && m.isActive && m.role === "TENANT_ADMIN";
   }
 
-  // Preserve q/sort when navigating back if present
   const sp = searchParams ?? {};
   const q = typeof sp.q === "string" ? sp.q : "";
   const sort = typeof sp.sort === "string" ? sp.sort : "";
@@ -198,7 +194,6 @@ export default async function TenantUsersPage({
 
   return (
     <>
-      {/* Header */}
       <div className="mb-4">
         <h1 className="text-xl font-semibold"># Users</h1>
         <p className="text-sm opacity-80">
@@ -215,7 +210,6 @@ export default async function TenantUsersPage({
         </div>
       </div>
 
-      {/* Table */}
       <Card>
         <CardContent className="p-0">
           {users.length === 0 ? (
@@ -263,16 +257,12 @@ export default async function TenantUsersPage({
                     const hideManage =
                       !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
 
-                    // Build links safely
-                    // (We keep these for back/forward consistency, but actions below are forms)
                     const previewAction = "/api/dev/preview-user";
                     const clearPreviewHref = appendQuery(
                       "/api/dev/preview-user",
                       "action",
                       "clear"
                     );
-
-                    // Admin list → tenant-side Manage screen (existing surface)
                     const manageHref = `/${tenantId}/settings/users/${u.id}`;
 
                     return (
@@ -310,13 +300,9 @@ export default async function TenantUsersPage({
                               className="inline-block"
                             >
                               <input type="hidden" name="userId" value={u.id} />
-                              <input
-                                type="hidden"
-                                name="redirectTo"
-                                value="auto"
-                              />
+                              <input type="hidden" name="redirectTo" value="auto" />
                               <SubmitButton size="sm" variant="secondary">
-                                Preview as
+                                {t["actions.preview"]}
                               </SubmitButton>
                             </form>
 
@@ -329,7 +315,7 @@ export default async function TenantUsersPage({
                               )}
                               className="underline"
                             >
-                              Clear preview
+                              {t["actions.clearPreview"]}
                             </Link>
 
                             {/* Manage link */}

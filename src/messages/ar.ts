@@ -37,4 +37,12 @@ export const ar: Messages = {
   // Settings (Horizon polish, upcoming)
   "settings.saved": "تم حفظ الإعدادات",
   "settings.saveFailed": "تعذر حفظ الإعدادات",
+
+    // Header (impersonation)
+  "header.previewAs": "المعاينة كـ",
+  "header.clearPreview": "إلغاء",
+  "header.signedInAs": "تسجيل الدخول باسم",
+  "banner.returnToAdmin": "العودة إلى المشرف",
+  "banner.viewingAs": "تسجيل العرض باسم",
+
 };

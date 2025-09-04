@@ -36,6 +36,16 @@ export const en: Messages = {
   // Settings (Horizon polish, upcoming)
   'settings.saved': 'Settings saved',
   'settings.saveFailed': 'Could not save settings',
+
+    // Header (impersonation)
+  "header.previewAs": "Previewing as",
+  "header.clearPreview": "Clear",
+  "header.signedInAs": "Signed in as",
+    "banner.returnToAdmin": "Return to admin",
+  "banner.viewingAs": "Viewing as",
+
+
 };
+
 
 

@@ -1,60 +1,46 @@
-"use client";
-
+// src/components/tenant-nav.tsx
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 
-type NavItem = {
-  href: string;
-  label: string;
+type Props = {
+  tenantId: string;
+  /** List of enabled module keys for this tenant (e.g. ["invoices", "inventory"]) */
+  entitlements?: string[];
 };
 
-interface TenantNavProps {
-  tenantId: string;
-  entitlements: string[]; // list of enabled module keys
-}
+/**
+ * Tenant-scoped top navigation.
+ * Matches the original call site API:
+ *   <TenantNav tenantId={tenantId} entitlements={accessibleKeys} />
+ *
+ * Notes:
+ * - Keeps labels simple (you can key later if desired).
+ * - Filters tabs by entitlements when provided.
+ */
+export function TenantNav({ tenantId, entitlements = [] }: Props) {
+  const items = [
+    { key: "invoices", label: "Invoices", href: `/${tenantId}/invoices` },
+    { key: "inventory", label: "Inventory", href: `/${tenantId}/inventory` },
+  ];
 
-export function TenantNav({ tenantId, entitlements }: TenantNavProps) {
-  const pathname = usePathname();
-
-  const items: NavItem[] = [];
-
-  if (entitlements.includes("inventory")) {
-    items.push({ href: `/${tenantId}/inventory`, label: "Inventory" });
-  }
-
-  if (entitlements.includes("invoices")) {
-    items.push({ href: `/${tenantId}/invoices`, label: "Invoices" });
-  }
+  const visible =
+    entitlements.length > 0
+      ? items.filter((i) => entitlements.includes(i.key))
+      : items;
 
   return (
-    <div className="border-b bg-background/60 backdrop-blur supports-[backdrop-filter]:bg-background/40">
-      <nav className="mx-auto max-w-6xl px-4">
-        <div className="flex gap-4">
-          {items.length > 0 ? (
-            items.map((item) => {
-              const active = pathname.startsWith(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={[
-                    "inline-flex h-9 items-center rounded-t-md border-b-2 px-3 text-sm transition-colors",
-                    active
-                      ? "border-blue-600 font-semibold text-blue-600"
-                      : "border-transparent text-muted-foreground hover:text-foreground",
-                  ].join(" ")}
-                >
-                  {item.label}
-                </Link>
-              );
-            })
-          ) : (
-            <span className="h-9 inline-flex items-center text-sm text-muted-foreground">
-              No modules enabled for this tenant.
-            </span>
-          )}
-        </div>
-      </nav>
-    </div>
+    <nav className="mt-3 border-b">
+      <ul className="flex gap-6 text-sm">
+        {visible.map((i) => (
+          <li key={i.key}>
+            <Link className="underline" href={i.href}>
+              {i.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }
+
+// Also provide default export to be robust to default imports.
+export default TenantNav;

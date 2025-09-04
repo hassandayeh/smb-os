@@ -2,22 +2,18 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { cn } from "@/lib/utils";
-import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getSessionUserId } from "@/lib/auth";
 import SignInLink from "@/components/SignInLink";
 import SignOutButton from "@/components/SignOutButton";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
-import ClearPreviewLink from "@/components/ClearPreviewLink"; // NEW
-
-// i18n catalogs + provider
-import { I18nProvider, type Locale } from "@/lib/i18n";
-import { en } from "@/messages/en";
-import { ar } from "@/messages/ar";
-
+import ClearPreviewLink from "@/components/ClearPreviewLink";
 import { cookies } from "next/headers";
 
-const catalogs = { en, ar } as const;
+// i18n provider + flat catalogs
+import { I18nProvider } from "@/lib/i18n";
+import { en } from "@/messages/en";
+import { ar } from "@/messages/ar";
 
 export const metadata: Metadata = {
   title: "SMB OS",
@@ -30,9 +26,9 @@ export default async function RootLayout({
   // Locale
   const cookieStore = await cookies();
   const cookieLocale = cookieStore.get("ui.locale")?.value;
-  const currentLocale: Locale = cookieLocale === "ar" ? "ar" : "en";
-  const messages = catalogs[currentLocale];
-  const dir = currentLocale === "ar" ? "rtl" : "ltr";
+  const locale = cookieLocale === "ar" ? "ar" : "en";
+  const t = locale === "ar" ? ar : en;
+  const dir = locale === "ar" ? "rtl" : "ltr";
 
   // Real session user
   const sessionUserId = await getSessionUserId();
@@ -43,7 +39,7 @@ export default async function RootLayout({
       })
     : null;
 
-  // Preview/impersonation state
+  // Preview/impersonation
   const previewUserId = cookieStore.get("previewUserId")?.value?.trim() || "";
   const previewUser = previewUserId
     ? await prisma.user.findUnique({
@@ -53,7 +49,7 @@ export default async function RootLayout({
     : null;
   const isPreviewing = !!previewUser;
 
-  // Compute platform ability from the EFFECTIVE identity
+  // Effective identity for nav visibility
   const effectiveUserId = isPreviewing ? previewUserId : sessionUserId || "";
   const platformRoles = effectiveUserId
     ? await prisma.appRole.findMany({
@@ -61,11 +57,11 @@ export default async function RootLayout({
         select: { role: true },
       })
     : [];
-  const hasDev = platformRoles.some((r) => r.role === "DEVELOPER");
-  const hasAppAdmin = platformRoles.some((r) => r.role === "APP_ADMIN");
-  const isPlatform = hasDev || hasAppAdmin;
+  const isPlatform =
+    platformRoles.some((r) => r.role === "DEVELOPER") ||
+    platformRoles.some((r) => r.role === "APP_ADMIN");
 
-  // Show the platform badge only for the real identity (not while previewing)
+  // Real identity badge only (optional)
   const realPlatformRoles = sessionUserId
     ? await prisma.appRole.findMany({
         where: { userId: sessionUserId },
@@ -83,9 +79,11 @@ export default async function RootLayout({
     u?.name || u?.email || "User";
 
   return (
-    <html lang={currentLocale} dir={dir}>
+    <html lang={locale} dir={dir}>
       <body>
-        <I18nProvider locale={currentLocale} messages={messages}>
+        {/* ✅ Wrap everything in I18nProvider so useI18n() (LanguageSwitcher) has context */}
+        <I18nProvider locale={locale} messages={t}>
+          {/* Header */}
           <header className="border-b">
             <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
               {/* Left: Brand + nav (based on effective identity) */}
@@ -116,14 +114,11 @@ export default async function RootLayout({
                 {isPreviewing ? (
                   <div className="flex items-center gap-2 text-sm">
                     <span className="rounded-md px-2 py-1 ring-1">
-                      {/* i18n: header.preview.as */}
-                      Previewing as:{" "}
+                      {t["header.previewAs"]}:{" "}
                       <span className="font-medium">{nameOrEmail(previewUser)}</span>
                     </span>
-                    {/* Keep me on this page after clearing */}
                     <ClearPreviewLink className="underline">
-                      {/* i18n: header.preview.clear */}
-                      Clear
+                      {t["header.clearPreview"]}
                     </ClearPreviewLink>
                   </div>
                 ) : null}
@@ -131,8 +126,7 @@ export default async function RootLayout({
                 {sessionUser ? (
                   <div className="flex items-center gap-2 text-sm">
                     <span className="opacity-80">
-                      {/* i18n: header.signedInAs */}
-                      Signed in as:{" "}
+                      {t["header.signedInAs"]}:{" "}
                       <span className="font-medium">{nameOrEmail(sessionUser)}</span>
                     </span>
                     {realBadge ? (
@@ -149,8 +143,10 @@ export default async function RootLayout({
             </div>
           </header>
 
+          {/* Main */}
           <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
 
+          {/* Footer */}
           <footer className="mx-auto max-w-6xl px-4 py-6 text-sm opacity-80">
             <div>© {new Date().getFullYear()} SMB OS</div>
             <div>Local-first • Multi-tenant • Modular</div>
