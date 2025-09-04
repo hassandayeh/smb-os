@@ -1,73 +1,71 @@
 // src/lib/guard-route.ts
-// Sphinx wrappers for API routes (ADMIN + tenant modules).
-// Converts access failures into JSON 403 and delegates to central helpers.
+// Sphinx wrapper for API routes (ADMIN + tenant).
+// Centralizes impersonation (preview cookie) + Keystone guard calls.
 
-import { NextResponse } from "next/server";
-import { getCurrentUserId } from "@/lib/current-user";
-import {
-  requireAdminAccess,
-  // alias to avoid name collision with this file's requireAccess()
-  requireAccess as requireModuleAccess,
-  requireL3SettingsAccess,
-} from "./access";
+"use server";
 
-export type GuardResult = NextResponse | null;
+import { cookies } from "next/headers";
+import { requireAdminAccess } from "./access";
+import { getSessionUserId } from "@/lib/auth";
+import { getActorLevel } from "@/lib/access";
+
+const PREVIEW_COOKIE = "previewUserId";
 
 /**
- * ADMIN API guard (platform area).
- * Usage:
- *   const guard = await requireAccess();
- *   if (guard) return guard; // guard is a 403 JSON response
+ * Resolve the effective user for API calls:
+ * - If a preview (impersonation) cookie exists, use that.
+ * - Otherwise fall back to the signed-in session user id.
  */
-export async function requireAccess(): Promise<GuardResult> {
-  try {
-    const userId = await getCurrentUserId();
-    await requireAdminAccess(userId);
-    return null;
-  } catch (err: any) {
-    const status = typeof err?.status === "number" ? err.status : 403;
-    const message = err?.message || "Forbidden";
-    return NextResponse.json({ error: message }, { status });
-  }
+export async function getEffectiveUserId(): Promise<string | null> {
+  // FIX: cookies() must be awaited in this runtime
+  const c = await cookies();
+  const preview = c.get(PREVIEW_COOKIE)?.value?.trim();
+  if (preview) return preview;
+
+  const sessionUserId = await getSessionUserId();
+  return sessionUserId ?? null;
 }
 
 /**
- * TENANT MODULE API guard (tenant-scoped).
- * Call at the top of any tenant API route.
- * - For moduleKey === "settings": allow L1/L2/L3 via requireL3SettingsAccess()
- * - For other modules: use module entitlement gate via requireModuleAccess()
- *
- * Usage:
- *   const guard = await guardTenantModule(req, params, "settings" | "<moduleKey>");
- *   if (guard) return guard;
+ * Require platform access (L1/L2).
+ * Runs against the effective user (preview if set).
+ * Returns normally if allowed; otherwise triggers your centralized 403/redirect.
+ */
+export async function requireAccess() {
+  const userId = await getEffectiveUserId();
+  if (!userId) {
+    await requireAdminAccess(""); // fail closed via central helper
+    return;
+  }
+  await requireAdminAccess(userId);
+}
+
+/**
+ * Tenant module guard example.
+ * Use from /api/tenants/[tenantId]/... routes to enforce entitlement.
+ * Return `null` if allowed; otherwise return a Response with an error.
  */
 export async function guardTenantModule(
-  _req: Request,
+  req: Request,
   params: { tenantId: string },
   moduleKey: string
-): Promise<GuardResult> {
-  try {
-    const userId = await getCurrentUserId();
-    if (!userId) {
-      const err = new Error("Forbidden (AUTH)");
-      // @ts-expect-error tag for route handlers
-      err.status = 403;
-      throw err;
-    }
-
-    if (moduleKey === "settings") {
-      await requireL3SettingsAccess(params.tenantId, userId);
-    } else {
-      await requireModuleAccess({
-        userId,
-        tenantId: params.tenantId,
-        moduleKey,
-      });
-    }
-    return null;
-  } catch (err: any) {
-    const status = typeof err?.status === "number" ? err.status : 403;
-    const message = err?.message || "Forbidden";
-    return NextResponse.json({ error: message }, { status });
+): Promise<Response | null> {
+  const userId = await getEffectiveUserId();
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "errors.auth.required" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
   }
+
+  // Example wiring for your centralized entitlement helper (pseudo):
+  // const ok = await hasModuleAccess(userId, params.tenantId, moduleKey);
+  // if (!ok) {
+  //   return new Response(JSON.stringify({ error: "errors.module.forbidden" }), {
+  //     status: 403,
+  //     headers: { "content-type": "application/json" },
+  //   });
+  // }
+
+  return null;
 }

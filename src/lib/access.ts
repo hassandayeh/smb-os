@@ -461,3 +461,87 @@ export async function canCreateUserWithRole(params: {
 
   return { allowed: true, actorLevel };
 }
+
+/* -------------------------------------------------------------------------- */
+/* NEW: Impersonation rules (Keystone) — HOTFIX (no supervisorId dependency)   */
+/* -------------------------------------------------------------------------- */
+
+export async function canImpersonate(actorUserId: string, targetUserId: string) {
+  // Platform roles take precedence
+  const actorLevel = await getActorLevel(actorUserId, "platform");
+  if (actorLevel === "L1" || actorLevel === "L2") {
+    return { allowed: true as const, reason: "platform.allowed" };
+  }
+
+  // Load both users (only fields that exist in current schema)
+  const [actor, target] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { id: true, tenantId: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, tenantId: true }, // no supervisorId
+    }),
+  ]);
+
+  if (!actor || !target) {
+    return { allowed: false as const, reason: "impersonation.user_not_found" };
+  }
+
+  // Resolve actor’s tenant-scoped level (use actor’s tenant where possible)
+  const tenantId = actor.tenantId ?? target.tenantId ?? "unknown";
+  const level = await getActorLevel(actorUserId, tenantId);
+
+  if (level === "L3") {
+    // L3: only within their tenant
+    const ok = actor.tenantId && target.tenantId && actor.tenantId === target.tenantId;
+    return ok
+      ? { allowed: true as const, reason: "L3.same_tenant" }
+      : { allowed: false as const, reason: "L3.cross_tenant.forbidden" };
+  }
+
+  if (level === "L4") {
+    // HOTFIX: we don’t know supervision mapping yet — deny for safety
+    return { allowed: false as const, reason: "L4.supervision_not_configured" };
+  }
+
+  // L5 & unknown
+  return { allowed: false as const, reason: "L5.forbidden" };
+}
+
+/* -------------------------------------------------------------------------- */
+/* NEW: Central helper to block removing the last active L3                    */
+/* -------------------------------------------------------------------------- */
+
+export async function assertNotLastActiveL3(params: {
+  tenantId: string;
+  targetUserId: string;
+}) {
+  const { tenantId, targetUserId } = params;
+
+  const target = await prisma.tenantMembership.findUnique({
+    where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
+    select: { role: true, isActive: true },
+  });
+
+  const targetIsActiveL3 = !!target?.isActive && target?.role === "TENANT_ADMIN";
+  if (!targetIsActiveL3) return;
+
+  const otherActiveL3 = await prisma.tenantMembership.findFirst({
+    where: {
+      tenantId,
+      role: "TENANT_ADMIN",
+      isActive: true,
+      userId: { not: targetUserId },
+    },
+    select: { id: true },
+  });
+
+  if (!otherActiveL3) {
+    const err = new Error("errors.membership.lastL3.forbidden");
+    // @ts-expect-error attach status for route mappers
+    err.status = 403;
+    throw err;
+  }
+}
