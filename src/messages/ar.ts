@@ -63,45 +63,43 @@ export const ar: Messages = {
   "users.manager.assign.success": "تم تحديث المدير.",
   "users.manager.assign.error": "تعذر تحديث المدير.",
 
-  // =========================
-  // Admin → Tenants (list)
-  // =========================
+  // === صفحة المستأجرين (لوحة الإدارة) ===
+  "date.fallback": "—",
+
   "admin.tenants.title": "المستأجرون",
-  "admin.console": "لوحة الإدارة",
+  "admin.console": "لوحة التحكم",
+
   "actions.exportCsv": "تصدير CSV",
 
-  // Sort labels
+  "actions.entitlements": "الصلاحيات",
+  "actions.clearSearch": "مسح البحث",
+
+  "tenants.summary.query": "تم العثور على {count} مستأجر{suffix} لـ “{q}”",
+  "tenants.summary.noQuery": "{count} مستأجر{suffix} إجمالي",
+  "tenants.empty.query": "لا يوجد مستأجرون لـ “{q}”.",
+  "tenants.empty.noQuery": "لا يوجد مستأجرون.",
+
   "tenants.sort.newestFirst": "الأحدث أولًا",
   "tenants.sort.oldestFirst": "الأقدم أولًا",
-  "tenants.sort.activationLatest": "التفعيل (الأحدث)",
-  "tenants.sort.activationEarliest": "التفعيل (الأقدم)",
-  "tenants.sort.nameAsc": "الاسم أ → ي",
-  "tenants.sort.nameDesc": "الاسم ي → أ",
+  "tenants.sort.activationLatest": "أحدث تفعيل",
+  "tenants.sort.activationEarliest": "أقدم تفعيل",
+  "tenants.sort.nameAsc": "الاسم (أ → ي)",
+  "tenants.sort.nameDesc": "الاسم (ي → أ)",
 
-  // Table headers
   "table.name": "الاسم",
   "table.id": "المعرّف",
   "table.status": "الحالة",
-  "table.activatedUntil": "مُفعّل حتى",
+  "table.activatedUntil": "تاريخ التفعيل",
   "table.created": "تاريخ الإنشاء",
   "table.actions": "الإجراءات",
 
-  // Empty & summary states
-  "tenants.summary.query": "إظهار {count} نتيجة{suffix} لعبارة “{q}”",
-  "tenants.summary.noQuery": "إظهار {count} مستأجر{suffix}",
-  "tenants.empty.query": "لا توجد مستأجرات تطابق “{q}”.",
-  "tenants.empty.noQuery": "لا توجد مستأجرات بعد.",
-  "actions.clearSearch": "مسح البحث",
-
-  // Pagination
   "pagination.pageOf": "الصفحة {page} من {totalPages}",
   "pagination.first": "الأولى",
   "pagination.prev": "السابق",
   "pagination.next": "التالي",
   "pagination.last": "الأخيرة",
 
-  // Row actions
-  "actions.entitlements": "الصلاحيات",
-  "search.placeholder.tenants": "ابحث عن المستأجرين…",
+  "search.placeholder.tenants": "ابحث عن مستأجرين..."
+
 
 };

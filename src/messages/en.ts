@@ -63,22 +63,31 @@ export const en: Messages = {
   "users.manager.assign.success": "Manager updated.",
   "users.manager.assign.error": "Couldn't update manager.",
 
-  // =========================
-  // Admin → Tenants (list)
-  // =========================
+  // === Tenants page (admin) ===
+  "date.fallback": "—",
+
+
+
   "admin.tenants.title": "Tenants",
   "admin.console": "Admin Console",
+
   "actions.exportCsv": "Export CSV",
 
-  // Sort labels
+  "actions.entitlements": "Entitlements",
+  "actions.clearSearch": "Clear search",
+
+  "tenants.summary.query": "{count} tenant{suffix} found for “{q}”",
+  "tenants.summary.noQuery": "{count} tenant{suffix} total",
+  "tenants.empty.query": "No tenants found for “{q}”.",
+  "tenants.empty.noQuery": "No tenants available.",
+
   "tenants.sort.newestFirst": "Newest first",
   "tenants.sort.oldestFirst": "Oldest first",
-  "tenants.sort.activationLatest": "Activation (latest)",
-  "tenants.sort.activationEarliest": "Activation (earliest)",
-  "tenants.sort.nameAsc": "Name A → Z",
-  "tenants.sort.nameDesc": "Name Z → A",
+  "tenants.sort.activationLatest": "Latest activation",
+  "tenants.sort.activationEarliest": "Earliest activation",
+  "tenants.sort.nameAsc": "Name (A → Z)",
+  "tenants.sort.nameDesc": "Name (Z → A)",
 
-  // Table headers
   "table.name": "Name",
   "table.id": "ID",
   "table.status": "Status",
@@ -86,22 +95,13 @@ export const en: Messages = {
   "table.created": "Created",
   "table.actions": "Actions",
 
-  // Empty & summary states
-  "tenants.summary.query": "Showing {count} result{suffix} for “{q}”",
-  "tenants.summary.noQuery": "Showing {count} tenant{suffix}",
-  "tenants.empty.query": "No tenants matched “{q}”.",
-  "tenants.empty.noQuery": "No tenants yet.",
-  "actions.clearSearch": "Clear search",
-
-  // Pagination
   "pagination.pageOf": "Page {page} of {totalPages}",
   "pagination.first": "First",
   "pagination.prev": "Prev",
   "pagination.next": "Next",
   "pagination.last": "Last",
 
-  // Row actions (kept generic for reuse)
-  "actions.entitlements": "Entitlements",
-  "search.placeholder.tenants": "Search tenants…",
+  "search.placeholder.tenants": "Search tenants..."
 
+  
 };

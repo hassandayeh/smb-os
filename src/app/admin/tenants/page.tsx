@@ -9,8 +9,12 @@ import { Button } from "@/components/ui/button"; // ✅ Styled actions
 import { getTServer } from "@/lib/i18n-server"; // ✅ Server-side i18n
 import { containsInsensitive } from "@/lib/db/search"; // ✅ PG-safe text search
 
-function fmtDate(d: Date | null) {
-  if (!d) return "—";
+// ⬇️ CHANGE 1: fmtDate now receives `t` and uses the i18n fallback key
+function fmtDate(
+  d: Date | null,
+  t: (key: string, params?: Record<string, unknown>) => string
+) {
+  if (!d) return t("date.fallback");
   try {
     return new Intl.DateTimeFormat(undefined, {
       year: "numeric",
@@ -148,10 +152,11 @@ export default async function TenantsAdminPage({
   const sp = (await searchParams) ?? {};
   const q = (typeof sp.q === "string" ? sp.q : "").trim();
 
-  const sort = (typeof sp.sort === "string" &&
-  sortOptions.some((o) => o.value === (sp.sort as SortKey))
-    ? (sp.sort as SortKey)
-    : "created_desc");
+  const sort =
+    typeof sp.sort === "string" &&
+    sortOptions.some((o) => o.value === (sp.sort as SortKey))
+      ? (sp.sort as SortKey)
+      : "created_desc";
 
   // Status (accepts any case)
   const rawStatus = typeof sp.status === "string" ? sp.status : "";
@@ -295,8 +300,9 @@ export default async function TenantsAdminPage({
                   <td>{tnt.name}</td>
                   <td className="font-mono">{tnt.id}</td>
                   <td className="uppercase">{statusLabel(tnt.status, t)}</td>
-                  <td>{fmtDate(tnt.activatedUntil)}</td>
-                  <td>{fmtDate(tnt.createdAt)}</td>
+                  {/* ⬇️ CHANGE 2 & 3: pass `t` to fmtDate */}
+                  <td>{fmtDate(tnt.activatedUntil, t)}</td>
+                  <td>{fmtDate(tnt.createdAt, t)}</td>
                   <td className="text-right">
                     <div className="flex items-center justify-end gap-2">
                       <Button asChild variant="ghost" size="sm">
