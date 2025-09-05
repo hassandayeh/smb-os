@@ -3,9 +3,9 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import SubmitButton from "@/components/SubmitButton";
 import { getCurrentUserId } from "@/lib/current-user";
-import { Button } from "@/components/ui/button";
 import { en } from "@/messages/en";
 import { ar } from "@/messages/ar";
 
@@ -32,12 +32,12 @@ function TenantRolePill({
 }) {
   const label =
     role === "TENANT_ADMIN"
-      ? "Tenant Admin (L3)"
+      ? "Tenant Admin (L1)"
       : role === "MANAGER"
-      ? "Manager (L4)"
-      : "Member (L5)";
+      ? "Manager (L2+)"
+      : "Member (L2+)";
   return (
-    <span className="mr-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground/80 ring-1 ring-inset ring-border">
+    <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs">
       {label}
     </span>
   );
@@ -75,14 +75,14 @@ export default async function TenantUsersPage({
     prisma.user.findMany({
       where: {
         tenantId,
-        // keep parity with existing logic: visible users are those with any non-deleted membership in this tenant
+        // visible users are those with any non-deleted membership in this tenant
         memberships: { some: { tenantId, deletedAt: null } },
       },
       select: {
         id: true,
         name: true,
         email: true,
-        role: true, // platform role (legacy field if present)
+        role: true, // (legacy platform field if present)
         createdAt: true,
         username: true,
         appRoles: { select: { role: true } }, // DEVELOPER/APP_ADMIN, etc.
@@ -116,7 +116,6 @@ export default async function TenantUsersPage({
     string,
     Record<(typeof MODULE_KEYS)[number], boolean | undefined>
   >();
-
   for (const u of users) {
     entMap.set(
       u.id,
@@ -139,17 +138,15 @@ export default async function TenantUsersPage({
       })
     : [];
 
-  const membershipMap = new Map<string, "TENANT_ADMIN" | "MANAGER" | "MEMBER">();
+  const membershipMap = new Map<string, "TENANT_ADMIN" | "MANAGER" | "MEMBER" | null>();
   const supervisorMap = new Map<string, string | null>();
   for (const m of memberships) {
-    membershipMap.set(m.userId, m.role as any);
+    membershipMap.set(m.userId, (m.role as any) ?? null);
     supervisorMap.set(m.userId, m.supervisorId ?? null);
   }
 
   // Build manager options list (for reference / future inline actions if re-enabled)
-  const managerIds = memberships
-    .filter((m) => m.role === "MANAGER")
-    .map((m) => m.userId);
+  const managerIds = memberships.filter((m) => m.role === "MANAGER").map((m) => m.userId);
   const managerOptions = managerIds.map((id) => ({
     id,
     name: nameMap.get(id) ?? id,
@@ -158,7 +155,7 @@ export default async function TenantUsersPage({
   // Who's viewing? (for UX controls)
   const actorUserId = await getCurrentUserId();
   let isPlatform = false;
-  let actorIsL3Here = false;
+  let actorIsL1Here = false; // top rank inside tenant
   if (actorUserId) {
     const roles = await prisma.appRole.findMany({
       where: { userId: actorUserId },
@@ -171,7 +168,8 @@ export default async function TenantUsersPage({
       where: { tenantId, userId: actorUserId, deletedAt: null, isActive: true },
       select: { role: true, isActive: true },
     });
-    actorIsL3Here = !!m && m.isActive && m.role === "TENANT_ADMIN";
+    // Treat TENANT_ADMIN as top-rank in this UI
+    actorIsL1Here = !!m && m.isActive && m.role === "TENANT_ADMIN";
   }
 
   // Preserve incoming q/sort to bounce back correctly
@@ -183,151 +181,156 @@ export default async function TenantUsersPage({
   if (sort) qs.set("sort", sort);
   const qsStr = qs.toString();
 
-  const backToTenantHref = qsStr ? `/admin/tenants/${tenantId}?${qsStr}` : `/admin/tenants/${tenantId}`;
+  const backToTenantHref = qsStr
+    ? `/admin/tenants/${tenantId}?${qsStr}`
+    : `/admin/tenants/${tenantId}`;
   const backToListHref = qsStr ? `/admin/tenants?${qsStr}` : `/admin/tenants`;
-  const currentUrl = qsStr ? `/admin/tenants/${tenantId}/users?${qsStr}` : `/admin/tenants/${tenantId}/users`;
+  const currentUrl = qsStr
+    ? `/admin/tenants/${tenantId}/users?${qsStr}`
+    : `/admin/tenants/${tenantId}/users`;
 
-  const roleOptionsForActor = (isPlatform: boolean) =>
-    isPlatform
-      ? (["TENANT_ADMIN", "MANAGER", "MEMBER"] as const)
-      : (["MANAGER", "MEMBER"] as const);
+  // Centralized role options (UI only; server still enforces Appendix rules)
+  const roleOptionsForActor = (platform: boolean) =>
+    platform ? (["TENANT_ADMIN", "MANAGER", "MEMBER"] as const) : (["MANAGER", "MEMBER"] as const);
+
+  // Destination for creation flow (lives in tenant settings)
+  const createUserHref = qsStr
+    ? `/${tenantId}/settings/users#create?${qsStr}`
+    : `/${tenantId}/settings/users#create`;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-4">
+      {/* Title + action bar */}
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Users</h1>
+          <h1 className="text-2xl font-semibold">Users</h1>
           <p className="text-sm text-muted-foreground">
-            Tenant: <span className="font-medium">{tenant?.name ?? tenantId}</span>
+            Tenant: {tenant?.name ?? tenantId}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Link className="underline underline-offset-2" href={backToListHref}>
+          <Link href={backToTenantHref} className="underline">
             Admin Console
           </Link>
           <span>•</span>
-          <Link className="underline underline-offset-2" href={backToTenantHref}>
+          <Link href={backToTenantHref} className="underline">
             Manage Tenant
           </Link>
+          {/* NEW: Create user entry point */}
+          <Button asChild className="ml-4">
+            <Link href={createUserHref}>Create user</Link>
+          </Button>
         </div>
       </div>
 
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="border-b">
-                <tr className="h-11">
-                  <th className="px-4 text-left font-medium">Name</th>
-                  <th className="px-4 text-left font-medium">Email</th>
-                  <th className="px-4 text-left font-medium">
-                    {isPlatformTenant ? "Platform role" : "Tenant role"}
-                  </th>
-                  <th className="px-4 text-left font-medium">Supervisor</th>
-                  <th className="px-4 text-left font-medium">Created</th>
-                  <th className="px-4 text-left font-medium">Access</th>
-                  <th className="px-4 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.length === 0 ? (
-                  <tr>
-                    <td className="px-4 py-6 text-muted-foreground" colSpan={7}>
-                      No users yet.
-                    </td>
-                  </tr>
-                ) : (
-                  users.map((u) => {
-                    const row = entMap.get(u.id)!;
-                    const onCount = (
-                      Object.keys(row) as (typeof MODULE_KEYS)[number][]
-                    ).reduce((n, mk) => n + (row[mk] === true ? 1 : 0), 0);
-                    const total = MODULE_KEYS.length;
-
-                    const tenantRole = membershipMap.get(u.id) ?? null;
-                    const currentSupervisorId = supervisorMap.get(u.id) ?? null;
-                    const currentSupervisorName = currentSupervisorId
-                      ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
-                      : null;
-
-                    const canEditRole =
-                      !isPlatformTenant && (isPlatform || (actorIsL3Here && u.id !== actorUserId));
-                    const roleOptions = roleOptionsForActor(isPlatform);
-
-                    const canEditSupervisor =
-                      !isPlatformTenant &&
-                      (isPlatform || actorIsL3Here) &&
-                      tenantRole === "MEMBER";
-
-                    // L3 should not get "Manage" link on themselves (use Manage in workspace instead)
-                    const hideManage = !isPlatformTenant && actorIsL3Here && u.id === actorUserId;
-
-                    // Impersonation endpoints (honor centralized dev route)
-                    const previewAction = "/api/dev/preview-user";
-                    const clearPreviewHref = appendQuery("/api/dev/preview-user", "action", "clear");
-
-                    // Unified Manage destination (our new screen)
-                    const manageHref = `/${tenantId}/settings/users/${u.id}`;
-
-                    return (
-                      <tr key={u.id} className="border-b last:border-b-0">
-                        <td className="px-4 py-3">{u.name ?? "—"}</td>
-                        <td className="px-4 py-3">{u.email ?? "—"}</td>
-                        <td className="px-4 py-3">
-                          {isPlatformTenant ? (
-                            "—"
-                          ) : tenantRole ? (
-                            <TenantRolePill role={tenantRole} />
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {isPlatformTenant
-                            ? "—"
-                            : tenantRole === "MEMBER"
-                            ? currentSupervisorId
-                              ? `Supervisor: ${currentSupervisorName}`
-                              : "None"
-                            : "—"}
-                        </td>
-                        <td className="px-4 py-3">{fmtDate(u.createdAt)}</td>
-                        <td className="px-4 py-3">
-                          {onCount} / {total}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {/* Preview as (POST to set preview cookie) */}
-                          <form action={previewAction} method="POST" className="inline">
-                            <input type="hidden" name="userId" value={u.id} />
-                            <SubmitButton
-                              variant="secondary"
-                              className="mr-2"
-                              pendingLabel={t["actions.preview"]}
-                            >
-                              {t["actions.preview"]}
-                            </SubmitButton>
-
-                          </form>
-
-                          {/* Clear preview (GET with action=clear) */}
-                          <Link className="mr-3 underline underline-offset-2" href={clearPreviewHref}>
-                            {t["actions.clearPreview"]}
-                          </Link>
-
-                          {/* Manage link */}
-                          {!(!isPlatformTenant && hideManage) && (
-                            <Link className="underline underline-offset-2" href={manageHref}>
-                              Manage
-                            </Link>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+          {/* Table header */}
+          <div className="grid grid-cols-7 gap-4 px-4 py-3 text-sm font-medium">
+            <div>Name</div>
+            <div>Email</div>
+            <div>{isPlatformTenant ? "Platform role" : "Tenant role"}</div>
+            <div>Supervisor</div>
+            <div>Created</div>
+            <div>Access</div>
+            <div>Actions</div>
           </div>
+          <div className="border-t" />
+
+          {/* Empty state */}
+          {users.length === 0 ? (
+            <div className="px-4 py-10 text-sm text-muted-foreground">
+              <div>No users yet.</div>
+              <div className="mt-3">
+                <Link href={createUserHref} className="underline">
+                  Create your first user
+                </Link>
+              </div>
+            </div>
+          ) : (
+            users.map((u) => {
+              const row = entMap.get(u.id)!;
+              const onCount = (Object.keys(row) as (typeof MODULE_KEYS)[number][]).reduce(
+                (n, mk) => n + (row[mk] === true ? 1 : 0),
+                0
+              );
+              const total = MODULE_KEYS.length;
+
+              const tenantRole = membershipMap.get(u.id) ?? null;
+              const currentSupervisorId = supervisorMap.get(u.id) ?? null;
+              const currentSupervisorName = currentSupervisorId
+                ? nameMap.get(currentSupervisorId) ?? currentSupervisorId
+                : null;
+
+              const canEditRole =
+                !isPlatformTenant && (isPlatform || (actorIsL1Here && u.id !== actorUserId));
+              const roleOptions = roleOptionsForActor(isPlatform);
+
+              const canEditSupervisor =
+                !isPlatformTenant && (isPlatform || actorIsL1Here) && tenantRole === "MEMBER";
+
+              // L1 should not get "Manage" link on themselves (use Manage in workspace instead)
+              const hideManage = !isPlatformTenant && actorIsL1Here && u.id === actorUserId;
+
+              // Impersonation endpoints (honor centralized dev route)
+              const previewAction = "/api/dev/preview-user";
+              const clearPreviewHref = appendQuery("/api/dev/preview-user", "action", "clear");
+
+              // Unified Manage destination (existing screen)
+              const manageHref = `/${tenantId}/settings/users/${u.id}`;
+
+              return (
+                <div
+                  key={u.id}
+                  className="grid grid-cols-7 items-center gap-4 px-4 py-3 text-sm"
+                >
+                  <div className="truncate">{u.name ?? "—"}</div>
+                  <div className="truncate">{u.email ?? "—"}</div>
+                  <div>
+                    {isPlatformTenant ? (
+                      "—"
+                    ) : tenantRole ? (
+                      <TenantRolePill role={tenantRole} />
+                    ) : (
+                      "—"
+                    )}
+                  </div>
+                  <div className="truncate">
+                    {isPlatformTenant
+                      ? "—"
+                      : tenantRole === "MEMBER"
+                      ? currentSupervisorId
+                        ? `Supervisor: ${currentSupervisorName}`
+                        : "None"
+                      : "—"}
+                  </div>
+                  <div>{fmtDate(u.createdAt)}</div>
+                  <div>
+                    {onCount} / {total}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {/* Preview as (POST to set preview cookie) */}
+                    <form action={previewAction} method="POST">
+                      <input type="hidden" name="userId" value={u.id} />
+                      <SubmitButton>{t["actions.preview"]}</SubmitButton>
+                    </form>
+
+                    {/* Clear preview */}
+                    <Link href={clearPreviewHref} className="underline">
+                      {t["actions.clearPreview"]}
+                    </Link>
+
+                    {/* Manage link */}
+                    {!(!isPlatformTenant && hideManage) && (
+                      <Link href={manageHref} className="underline">
+                        Manage
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </CardContent>
       </Card>
     </div>
