@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole, type Prisma } from "@prisma/client";
 import { requireAccess } from "@/lib/guard-route"; // Keystone admin guard (API)
+import { reassignOnSupervisorDeactivation } from "@/lib/rbac/reassign";
 
 export const dynamic = "force-dynamic";
 
@@ -277,6 +278,7 @@ async function handleDeleteOrUpdate(
         }
       }
 
+      let reassignmentCount = 0;
       const result = await prisma.$transaction(async (tx) => {
         // 1) Username suffix (free the handle)
         const oldUsername = user.username;
@@ -287,12 +289,26 @@ async function handleDeleteOrUpdate(
         );
 
         await tx.user.update({
+          
           where: { id: userId },
           data: { username: newUsername },
           select: { id: true },
         });
 
+        // If the user being deactivated is a MANAGER, reassign their reports first (Appendix rule)
+        if (membership.role === "MANAGER") {
+          const res = await reassignOnSupervisorDeactivation({
+            tenantId,
+            supervisorUserId: userId,
+          });
+          reassignmentCount = res.count ?? 0;
+        }
+
+
+
+
         // 2) Mark membership soft-deleted and inactive
+    
         await tx.tenantMembership.updateMany({
           where: { tenantId, userId, deletedAt: null },
           data: {
@@ -378,14 +394,9 @@ async function handleDeleteOrUpdate(
       isTenantAdmin &&
       actorUserId === userId &&
       (roleEnum !== undefined || typeof isActive === "boolean")
-    ) {
-      return redirectOrJson(
-        req,
-        body.redirectTo,
-        { error: "Tenant Admin cannot change their own role or status" },
-        400
-      );
-    }
+        ) {
+      return redirectOrJson(req, undefined, { ok: true }, 200);
+      }
 
     let updatedUser = user;
     let updatedMembership = membership;
