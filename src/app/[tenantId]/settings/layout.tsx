@@ -1,15 +1,22 @@
 // src/app/[tenantId]/settings/layout.tsx
-import type { ReactNode } from "react";
+import React from "react";
 import { ensureL3SettingsAccessOrRedirect } from "@/lib/access";
 
-export default async function SettingsLayout({
-  children,
-  params,
-}: {
-  children: ReactNode;
+type Props = {
+  children: React.ReactNode;
   params: { tenantId: string };
-}) {
-  // Keystone compliance: layout-first, centralized guard (settings-specific)
-  await ensureL3SettingsAccessOrRedirect(params.tenantId);
+};
+
+export const dynamic = "force-dynamic";
+
+export default async function SettingsLayout({ children, params }: Props) {
+  const { tenantId } = params;
+
+  // Centralized guard:
+  // - Allows Platform L1/L2 (A1/A2) globally
+  // - Allows Tenant L3 (tenant admin)
+  // - Redirects others to /forbidden with a reason
+  await ensureL3SettingsAccessOrRedirect(tenantId);
+
   return <>{children}</>;
 }

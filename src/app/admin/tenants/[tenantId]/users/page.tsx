@@ -189,10 +189,6 @@ export default async function TenantUsersPage({
     ? `/admin/tenants/${tenantId}/users?${qsStr}`
     : `/admin/tenants/${tenantId}/users`;
 
-  // Centralized role options (UI only; server still enforces Appendix rules)
-  const roleOptionsForActor = (platform: boolean) =>
-    platform ? (["TENANT_ADMIN", "MANAGER", "MEMBER"] as const) : (["MANAGER", "MEMBER"] as const);
-
   // Destination for creation flow (lives in tenant settings)
   const createUserHref = qsStr
     ? `/${tenantId}/settings/users#create?${qsStr}`
@@ -216,10 +212,12 @@ export default async function TenantUsersPage({
           <Link href={backToTenantHref} className="underline">
             Manage Tenant
           </Link>
-          {/* NEW: Create user entry point */}
-          <Button asChild className="ml-4">
-            <Link href={createUserHref}>Create user</Link>
-          </Button>
+          {/* Create user entry point → only for NON-PLATFORM tenants */}
+          {!isPlatformTenant && (
+            <Button asChild className="ml-4">
+              <Link href={createUserHref}>Create user</Link>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -241,11 +239,13 @@ export default async function TenantUsersPage({
           {users.length === 0 ? (
             <div className="px-4 py-10 text-sm text-muted-foreground">
               <div>No users yet.</div>
-              <div className="mt-3">
-                <Link href={createUserHref} className="underline">
-                  Create your first user
-                </Link>
-              </div>
+              {!isPlatformTenant && (
+                <div className="mt-3">
+                  <Link href={createUserHref} className="underline">
+                    Create your first user
+                  </Link>
+                </div>
+              )}
             </div>
           ) : (
             users.map((u) => {
@@ -264,8 +264,6 @@ export default async function TenantUsersPage({
 
               const canEditRole =
                 !isPlatformTenant && (isPlatform || (actorIsL1Here && u.id !== actorUserId));
-              const roleOptions = roleOptionsForActor(isPlatform);
-
               const canEditSupervisor =
                 !isPlatformTenant && (isPlatform || actorIsL1Here) && tenantRole === "MEMBER";
 
@@ -287,13 +285,7 @@ export default async function TenantUsersPage({
                   <div className="truncate">{u.name ?? "—"}</div>
                   <div className="truncate">{u.email ?? "—"}</div>
                   <div>
-                    {isPlatformTenant ? (
-                      "—"
-                    ) : tenantRole ? (
-                      <TenantRolePill role={tenantRole} />
-                    ) : (
-                      "—"
-                    )}
+                    {isPlatformTenant ? "—" : tenantRole ? <TenantRolePill role={tenantRole} /> : "—"}
                   </div>
                   <div className="truncate">
                     {isPlatformTenant
@@ -320,7 +312,7 @@ export default async function TenantUsersPage({
                       {t["actions.clearPreview"]}
                     </Link>
 
-                    {/* Manage link */}
+                    {/* Manage link (hidden for L1 self on tenant) */}
                     {!(!isPlatformTenant && hideManage) && (
                       <Link href={manageHref} className="underline">
                         Manage
