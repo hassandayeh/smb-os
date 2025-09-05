@@ -19,7 +19,6 @@ datasource db {
 }
 
 /// ---- Enums ----
-
 enum TenantStatus {
   ACTIVE
   SUSPENDED
@@ -28,6 +27,14 @@ enum TenantStatus {
 enum UserRole {
   ADMIN
   MEMBER
+}
+
+// NEW — Formal domain classification for users
+// PLATFORM → A-series (A1/A2), system-level users (not tenant members)
+// TENANT   → regular tenant-scoped users
+enum Domain {
+  PLATFORM
+  TENANT
 }
 
 // NEW — Platform-level roles (L1/L2)
@@ -44,98 +51,138 @@ enum TenantMemberRole {
 }
 
 /// ---- Models ----
-
 model Tenant {
-  id     String       @id @default(cuid())
-  name   String
-  status TenantStatus @default(ACTIVE)
+  id               String          @id @default(cuid())
+  name             String
+  status           TenantStatus    @default(ACTIVE)
 
   /// Manual activation end date (extend on cash/wire renewal)
-  activatedUntil DateTime?
+  activatedUntil   DateTime?
 
   /// Default UI language for this tenant (e.g., "en", "ar")
-  defaultLocale String @default("en")
+  defaultLocale    String          @default("en")
 
   /// Industry/type of this tenant, used for presets (pharmacy|factory|services, etc.)
-  industry String?                     // ← optional
+  industry         String?         // ← optional
 
   // --- Hierarchy (parent/child tenants) ---
-  parentTenantId String?               // ← optional
-  parent         Tenant?  @relation("TenantChildren", fields: [parentTenantId], references: [id])
-  children       Tenant[] @relation("TenantChildren")
+  parentTenantId   String?         // ← optional
+  parent           Tenant?         @relation("TenantChildren", fields: [parentTenantId], references: [id])
+  children         Tenant[]        @relation("TenantChildren")
 
   // Soft delete
-  deletedAt DateTime?
+  deletedAt        DateTime?
 
   // Timestamps
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 
   // Relations
-  users        User[]
-  entitlements Entitlement[]
-  auditLogs    AuditLog[]
+  users            User[]
+  entitlements     Entitlement[]
+  auditLogs        AuditLog[]
 
-  // NEW — Pyramids
+  // NEW — Pyramids memberships
   memberships      TenantMembership[]
   userEntitlements UserEntitlement[]
 
   @@index([status])
   @@index([activatedUntil])
   @@index([parentTenantId])
+
   @@map("Tenants")
 }
 
 model User {
-  id       String @id @default(cuid())
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  id            String    @id @default(cuid())
 
-  name         String
-  email        String
+  // Tenant membership anchor (tenant-scoped users)
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+
+  name          String
+  email         String
+
   /// Username sign-in (unique per tenant)
-  username     String                    // ← REQUIRED
-  passwordHash String
-  role         UserRole @default(MEMBER)
+  username      String // ← REQUIRED
+  passwordHash  String
+
+  role          UserRole @default(MEMBER)
 
   /// Optional per-user language override (falls back to tenant default)
-  localeOverride String?                 // ← optional
+  localeOverride String? // ← optional
+
+  // ---- NEW: formalized authority & hierarchy ----
+  /// Domain classification: PLATFORM vs TENANT (default: TENANT)
+  domain        Domain   @default(TENANT)
+
+  /// Authority rank: 1 = highest (L1), larger numbers = lower authority
+  /// Default to 5 so backfill is safe for regular members
+  rank          Int      @default(5)
+
+  /// Optional display label (UI only; Horizon can later provide labels)
+  roleLabel     String?
+
+  /// Optional supervisor (same-tenant logical constraint enforced in app/guards)
+  supervisorId  String?
+  supervisor    User?     @relation("UserSupervisor", fields: [supervisorId], references: [id])
+  reports       User[]    @relation("UserSupervisor")
+
+  /// Active flag (separate from soft delete — deletedAt)
+  active        Boolean   @default(true)
 
   // Soft delete
-  deletedAt DateTime?
+  deletedAt     DateTime?
 
   // Timestamps
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   // Audit relation (actorUserId)
-  auditLogs AuditLog[]
+  auditLogs     AuditLog[]
 
   // NEW — Pyramids back-relations
-  appRoles          AppRole[]
-  memberships       TenantMembership[]
+  appRoles      AppRole[]
+  memberships   TenantMembership[]
   supervisedMembers TenantMembership[] @relation("SupervisorRelation")
-  userEntitlements  UserEntitlement[]
+  userEntitlements UserEntitlement[]
 
   // NEW — Local auth sessions (back-relation)
-  sessions AuthSession[]
+  sessions      AuthSession[]
 
   // Uniques / indexes
   @@unique([tenantId, email])
-  @@unique([tenantId, username])        // ← per-tenant uniqueness
+  @@unique([tenantId, username]) // ← per-tenant uniqueness
+
+  // Helpful indices for guards & queries
   @@index([tenantId, role])
+  @@index([tenantId, domain, rank])
+  @@index([tenantId, active])
+  @@index([tenantId, rank])
+  @@index([supervisorId])
+
+  // NOTE (Postgres hardening target):
+  // At cutover to Postgres, create a partial unique index to enforce
+  // "Exactly one active L1 per tenant":
+  //
+  // CREATE UNIQUE INDEX only_one_active_L1_per_tenant
+  //   ON "Users" ("tenantId")
+  //   WHERE domain = 'TENANT' AND rank = 1 AND active = TRUE AND "deletedAt" IS NULL;
+  //
+  // Prisma doesn't support partial unique indexes portably; we'll apply via SQL migration.
+
   @@map("Users")
 }
 
 model Module {
   /// Stable key (e.g., "inventory", "invoices")
-  key         String  @id
-  name        String
-  description String?                     // ← optional
+  key            String   @id
+  name           String
+  description    String?  // ← optional
+  createdAt      DateTime @default(now())
 
-  createdAt DateTime @default(now())
+  entitlements   Entitlement[]
 
-  entitlements     Entitlement[]
   // NEW — Pyramids
   userEntitlements UserEntitlement[]
 
@@ -144,129 +191,134 @@ model Module {
 
 model Entitlement {
   /// Composite key: one row per (tenant, module)
-  tenantId  String
-  moduleKey String
+  tenantId   String
+  moduleKey  String
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  module Module @relation(fields: [moduleKey], references: [key])
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  module     Module @relation(fields: [moduleKey], references: [key])
 
   /// Server-side gate: if false/missing → return 403 & hide related UI
-  isEnabled Boolean @default(false)
+  isEnabled  Boolean  @default(false)
 
   /// Optional JSON blob for limits/feature flags (e.g., { "maxUsers": 5 })
   limitsJson Json?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@id([tenantId, moduleKey])
   @@index([tenantId])
   @@index([moduleKey])
+
   @@map("Entitlements")
 }
 
 model AuditLog {
-  id String @id @default(cuid())
+  id          String   @id @default(cuid())
 
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
 
-  /// The user who performed the action (admin/member). Can be null for system actions.
-  actorUserId String?                  // ← optional
-  actor       User?   @relation(fields: [actorUserId], references: [id])
+  /// The user who performed the action (admin/member).
+  /// Can be null for system actions.
+  actorUserId String? // ← optional
+  actor       User?    @relation(fields: [actorUserId], references: [id])
 
   /// Short verb, e.g., "TENANT_CREATE", "ENTITLEMENT_TOGGLE", "ACTIVATION_EXTEND"
-  action String
+  action      String
 
   /// Additional context (e.g., old/new values, request IP) — arbitrary JSON
-  metaJson Json?
+  metaJson    Json?
 
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([tenantId])
   @@index([actorUserId])
   @@index([action])
+
   @@map("AuditLog")
 }
 
 // ======== NEW: Project Pyramids — Phase 0 (surrogate PKs) ========
-
 model AppRole {
-  id     String       @id @default(cuid())
-  userId String
-  role   PlatformRole
-  user   User         @relation(fields: [userId], references: [id])
-
-  createdAt DateTime @default(now())
+  id        String        @id @default(cuid())
+  userId    String
+  role      PlatformRole
+  user      User          @relation(fields: [userId], references: [id])
+  createdAt DateTime      @default(now())
 
   @@unique([userId, role])
   @@index([role])
+
   @@map("AppRoles")
 }
 
 model TenantMembership {
-  id       String           @id @default(cuid())
-  userId   String
-  tenantId String
-  role     TenantMemberRole
-  isActive Boolean          @default(true)
+  id              String            @id @default(cuid())
+  userId          String
+  tenantId        String
+  role            TenantMemberRole
+  isActive        Boolean           @default(true)
 
-  /// Optional supervisor for L5 (and sometimes L4). Points to another User.
-  supervisorId String?      // ← optional
-  supervisor   User?   @relation("SupervisorRelation", fields: [supervisorId], references: [id])
+  /// Optional supervisor for L5 (and sometimes L4).
+  /// Points to another User.
+  supervisorId    String?           // ← optional
+  supervisor      User?             @relation("SupervisorRelation", fields: [supervisorId], references: [id])
 
   /// Modules this member can grant to their subordinates (L4 delegating to L5)
   grantableModules Json?
 
-  user   User   @relation(fields: [userId], references: [id])
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user            User              @relation(fields: [userId], references: [id])
+  tenant          Tenant            @relation(fields: [tenantId], references: [id])
 
   // ⬇️ NEW: soft-delete metadata for membership
   deletedAt       DateTime?
   deletedByUserId String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   @@unique([userId, tenantId]) // one membership per tenant
   @@index([tenantId, role])
   @@index([supervisorId])
+
   @@map("TenantMemberships")
 }
 
 model UserEntitlement {
-  id        String @id @default(cuid())
-  userId    String
-  tenantId  String
-  moduleKey String
+  id         String   @id @default(cuid())
+  userId     String
+  tenantId   String
+  moduleKey  String
 
-  user   User   @relation(fields: [userId], references: [id])
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  module Module @relation(fields: [moduleKey], references: [key])
+  user       User    @relation(fields: [userId], references: [id])
+  tenant     Tenant  @relation(fields: [tenantId], references: [id])
+  module     Module  @relation(fields: [moduleKey], references: [key])
 
-  isEnabled Boolean @default(false)
+  isEnabled  Boolean @default(false)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@unique([userId, tenantId, moduleKey])
   @@index([tenantId])
   @@index([moduleKey])
+
   @@map("UserEntitlements")
 }
 
 // ======== Local Auth Sessions ========
-
 model AuthSession {
-  id        String    @id @default(cuid())
-  token     String    @unique
-  userId    String
-  user      User      @relation(fields: [userId], references: [id])
-  createdAt DateTime  @default(now())
-  expiresAt DateTime
-  revokedAt DateTime?
+  id         String   @id @default(cuid())
+  token      String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
 
   @@index([userId])
   @@index([expiresAt])
+
   @@map("AuthSessions")
 }
