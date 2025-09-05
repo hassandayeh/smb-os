@@ -104,12 +104,12 @@ export const en: Messages = {
 
   // ===== Appendix validators — error/feedback messages (i18n keys only)
   // Used by src/lib/rbac/validators.ts and guard-route mapper
-  'roles.singleL1Violation': 'Exactly one active L1 is required for tenant {tenantId}. Current count: {count}.',
+  'roles.singleL1Violation': 'Exactly one active L1 is required for tenant {tenantId}.\nCurrent count: {count}.',
   'roles.tenantL1Missing': 'No active L1 found for tenant {tenantId}.',
   'roles.supervisorRequired': 'A supervisor is required for rank {rank}.',
   'roles.supervisorSameTenant': 'Supervisor must belong to the same tenant.',
   'roles.supervisorMustBeHigher': 'Supervisor rank ({supervisorRank}) must be higher (a lower number) than rank {rank}.',
-  'roles.supervisorNoCycles': 'Supervisor assignment creates a cycle. Please choose a different manager.',
+  'roles.supervisorNoCycles': 'Supervisor assignment creates a cycle.\nPlease choose a different manager.',
   'roles.reassignmentComplete': 'Reports were reassigned successfully.',
 
   // ===== API/guard standard error keys
@@ -117,4 +117,13 @@ export const en: Messages = {
   'errors.module.forbidden': 'You do not have access to this module.',
   'errors.forbidden': 'Forbidden.',
   'errors.server': 'Something went wrong.',
+
+  // ===== Additional API errors (appendix handover)
+  'errors.role.invalid': 'Invalid role.',
+  'errors.username.conflict.tenant': 'Username already exists in this tenant.',
+  'errors.conflict.unique': 'Conflict: resource already exists.',
+  'errors.user.name_required': 'Name is required.',
+  'errors.user.username_required': 'Username is required.',
+  'errors.tenant.required': 'Tenant is required.',
+  'errors.user.create_failed': 'Failed to create user.',
 };

@@ -4,42 +4,34 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/auth";
-import { getActorLevel, type Level } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 
-/**
- * Helpers
- */
+// Keystone/Sphinx centralized guard + Appendix validators
+import { requireAccess } from "@/lib/access";
+import { validateSupervisorRule, RbacError } from "@/lib/rbac/validators";
+
+/** Helpers */
 type Json = Record<string, unknown>;
-
 function json(data: Json, status = 200) {
-  return NextResponse.json(data, { status, headers: { "content-type": "application/json" } });
+  return NextResponse.json(data, {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
-
-function badRequest(msg = "errors.bad_request") {
+function badRequest(msg = "errors.params.required") {
   return json({ error: msg }, 400);
 }
-
-function forbidden(msg = "errors.supervisor.forbidden") {
+function forbidden(msg = "errors.module.forbidden") {
   return json({ error: msg }, 403);
 }
-
-function notFound(msg = "errors.user.not_found") {
+function notFound(msg = "errors.user.not_found_in_tenant") {
   return json({ error: msg }, 404);
 }
-
 function methodNotAllowed() {
   return json({ error: "errors.http.method_not_allowed" }, 405);
 }
 
-function ensureActorCanAssign(level: Level | null) {
-  // Keystone rule: L1/L2 platform allowed; L3 tenant admin allowed; L4/L5 no.
-  return level === "L1" || level === "L2" || level === "L3";
-}
-
-/**
- * Parse helpers
- */
+/** Parse helpers */
 function readQuery(req: Request) {
   const url = new URL(req.url);
   return {
@@ -50,14 +42,18 @@ function readQuery(req: Request) {
 
 async function readBody(req: Request) {
   const ct = req.headers.get("content-type") || "";
+
   if (ct.includes("application/x-www-form-urlencoded")) {
     const f = await req.formData();
     return {
       tenantId: String(f.get("tenantId") ?? ""),
       userId: String(f.get("userId") ?? ""),
-      supervisorId: (f.get("supervisorId") != null ? String(f.get("supervisorId")) : null) as string | null,
+      supervisorId: (f.get("supervisorId") != null
+        ? String(f.get("supervisorId"))
+        : null) as string | null,
     };
   }
+
   if (ct.includes("application/json")) {
     const b = (await req.json().catch(() => ({}))) as any;
     return {
@@ -66,12 +62,13 @@ async function readBody(req: Request) {
       supervisorId: (b?.supervisorId ?? null) as string | null,
     };
   }
+
   return { tenantId: "", userId: "", supervisorId: null as string | null };
 }
 
 /**
  * GET /api/admin/tenants/supervisor?tenantId=...&userId=...
- * Returns current supervisorId + candidate managers (L4) for selection.
+ * Returns current supervisorId + candidate managers for selection.
  */
 export async function GET(req: Request) {
   const actorId = await getSessionUserId();
@@ -80,19 +77,34 @@ export async function GET(req: Request) {
   const { tenantId, userId: targetUserId } = readQuery(req);
   if (!tenantId || !targetUserId) return badRequest();
 
-  const level = await getActorLevel(actorId, tenantId);
-  if (!ensureActorCanAssign(level)) return forbidden();
+  // Centralized module guard (Keystone/Sphinx)
+  try {
+    await requireAccess({ userId: actorId, tenantId, moduleKey: "admin" });
+  } catch {
+    return forbidden();
+  }
 
   // Validate target membership and ensure it's not deleted
   const targetMem = await prisma.tenantMembership.findUnique({
     where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
-    select: { role: true, isActive: true, deletedAt: true, supervisorId: true },
+    select: {
+      isActive: true,
+      deletedAt: true,
+      supervisorId: true,
+      role: true,
+    },
   });
+
   if (!targetMem || !!targetMem.deletedAt) return notFound();
 
-  // Candidate supervisors are active MANAGER (L4) in the same tenant
+  // Candidates: active managers in same tenant (kept role filter for now)
   const managerMems = await prisma.tenantMembership.findMany({
-    where: { tenantId, role: "MANAGER", isActive: true, deletedAt: null },
+    where: {
+      tenantId,
+      role: "MANAGER",
+      isActive: true,
+      deletedAt: null,
+    },
     select: { user: { select: { id: true, name: true } } },
     orderBy: { user: { name: "asc" } },
   });
@@ -106,8 +118,6 @@ export async function GET(req: Request) {
     supervisor: {
       currentId: targetMem.supervisorId ?? null,
       candidates,
-      // UI can also infer enable state, but we include a hint:
-      canAssign: ensureActorCanAssign(level),
     },
   });
 }
@@ -124,32 +134,39 @@ export async function POST(req: Request) {
   const { tenantId, userId: targetUserId, supervisorId } = await readBody(req);
   if (!tenantId || !targetUserId) return badRequest();
 
-  const level = await getActorLevel(actorId, tenantId);
-  if (!ensureActorCanAssign(level)) return forbidden();
+  // Centralized module guard (Keystone/Sphinx)
+  try {
+    await requireAccess({ userId: actorId, tenantId, moduleKey: "admin" });
+  } catch {
+    return forbidden();
+  }
 
-  // Load target membership (must exist, active, not deleted)
+  // Target membership must exist and be active (include role for validator)
   const targetMem = await prisma.tenantMembership.findUnique({
     where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
-    select: { id: true, role: true, isActive: true, deletedAt: true, supervisorId: true },
+    select: {
+      id: true,
+      isActive: true,
+      deletedAt: true,
+      supervisorId: true,
+      role: true, // <-- needed for validateSupervisorRule signature
+    },
   });
   if (!targetMem || !!targetMem.deletedAt) return notFound();
 
-  // Per Keystone: mapping is for L5 members; allow platform/L3 to set for L5s.
-  if (targetMem.role !== "MEMBER") {
-    return forbidden("errors.supervisor.only_for_L5");
-  }
-
-  // When assigning, ensure the supervisor is an active L4 in the same tenant
-  let newSupervisorId: string | null = null;
-  if (supervisorId) {
-    const supMem = await prisma.tenantMembership.findUnique({
-      where: { userId_tenantId: { userId: supervisorId, tenantId } as any },
-      select: { role: true, isActive: true, deletedAt: true, userId: true },
+  // Run Appendix validator (domain/rank rules, same-tenant, higher-rank, no cycles, etc.)
+  try {
+    await validateSupervisorRule({
+      tenantId,
+      userId: targetUserId,
+      role: targetMem.role ?? null,
+      supervisorId: supervisorId ?? null,
     });
-    if (!supMem || !!supMem.deletedAt || !supMem.isActive || supMem.role !== "MANAGER") {
-      return forbidden("errors.supervisor.invalid_supervisor");
-    }
-    newSupervisorId = supMem.userId;
+  } catch (e: unknown) {
+    // Standardized i18n error surface
+    const err = e as RbacError;
+    // Most supervisor rule violations are 400 (validation). Keep i18n key only.
+    return json({ error: err.code, meta: (err as any).meta ?? undefined }, 400);
   }
 
   const before = { supervisorId: targetMem.supervisorId ?? null };
@@ -157,7 +174,7 @@ export async function POST(req: Request) {
   try {
     const updated = await prisma.tenantMembership.update({
       where: { userId_tenantId: { userId: targetUserId, tenantId } as any },
-      data: { supervisorId: newSupervisorId },
+      data: { supervisorId: supervisorId ?? null },
       select: { supervisorId: true },
     });
 
@@ -176,7 +193,7 @@ export async function POST(req: Request) {
     return json({ ok: true, supervisorId: updated.supervisorId ?? null });
   } catch (e) {
     console.error("supervisor.update error:", e);
-    return json({ error: "errors.supervisor.update_failed" }, 500);
+    return json({ error: "errors.server" }, 500);
   }
 }
 

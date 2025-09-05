@@ -56,8 +56,7 @@ export const ar: Messages = {
   "errors.membership.not_found_or_deleted": "العضوية غير موجودة أو محذوفة بالفعل.",
   "errors.user.delete_failed": "فشل حذف المستخدم.",
   "errors.membership.lastL3.forbidden": "لا يمكنك إزالة آخر مشرف مستأجر نشط.",
-  "errors.membership.demote_lastL3.forbidden":
-    "لا يمكنك خفض رتبة آخر مشرف مستأجر نشط.",
+  "errors.membership.demote_lastL3.forbidden": "لا يمكنك خفض رتبة آخر مشرف مستأجر نشط.",
 
   // المستخدمون / المدير المباشر
   "users.manager.label": "المدير",
@@ -105,14 +104,14 @@ export const ar: Messages = {
 
   // ===== رسائل التحقق/الأخطاء الخاصة بالملحق (تستخدمها validators + حارس المسارات)
   "roles.singleL1Violation":
-    "يجب أن يكون هناك مسؤول L1 واحد نشط فقط للجهة {tenantId}. العدد الحالي: {count}.",
+    "يجب أن يكون هناك مسؤول L1 واحد نشط فقط للجهة {tenantId}.\nالعدد الحالي: {count}.",
   "roles.tenantL1Missing": "لا يوجد مسؤول L1 نشط للجهة {tenantId}.",
   "roles.supervisorRequired": "يلزم تعيين مدير للرتبة {rank}.",
   "roles.supervisorSameTenant": "يجب أن يكون المدير من نفس الجهة.",
   "roles.supervisorMustBeHigher":
     "رتبة المدير ({supervisorRank}) يجب أن تكون أعلى (رقم أقل) من الرتبة {rank}.",
   "roles.supervisorNoCycles":
-    "تعيين المدير يؤدي إلى حلقة. يرجى اختيار مدير آخر.",
+    "تعيين المدير يؤدي إلى حلقة.\nيرجى اختيار مدير آخر.",
   "roles.reassignmentComplete": "تم إعادة إسناد المرؤوسين بنجاح.",
 
   // ===== مفاتيح أخطاء قياسية لحارس واجهات البرمجة (API)
@@ -120,4 +119,13 @@ export const ar: Messages = {
   "errors.module.forbidden": "ليست لديك صلاحية الوصول إلى هذه الوحدة.",
   "errors.forbidden": "ممنوع.",
   "errors.server": "حدث خطأ ما.",
+
+  // ===== مفاتيح أخطاء إضافية (حسب الحافظة)
+  "errors.role.invalid": "دور غير صالح.",
+  "errors.username.conflict.tenant": "اسم المستخدم موجود بالفعل ضمن هذه الجهة.",
+  "errors.conflict.unique": "تعارض: المورد موجود بالفعل.",
+  "errors.user.name_required": "الاسم مطلوب.",
+  "errors.user.username_required": "اسم المستخدم مطلوب.",
+  "errors.tenant.required": "المستأجر مطلوب.",
+  "errors.user.create_failed": "فشل إنشاء المستخدم.",
 };
