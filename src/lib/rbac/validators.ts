@@ -1,6 +1,6 @@
 // src/lib/rbac/validators.ts
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, TenantMemberRole } from "@prisma/client";
 
 /**
  * RBAC error codes map 1:1 to i18n keys.
@@ -28,109 +28,147 @@ export class RbacError extends Error {
 
 type Tx = Prisma.TransactionClient | typeof prisma;
 
-/** Helpers */
-async function findActiveL1(tx: Tx, tenantId: string) {
-  // L1 = numeric rank 1 (Appendix). Platform users have no tenant chain.
-  return tx.user.findFirst({
-    where: { tenantId, rank: 1, active: true },
-    select: { id: true, tenantId: true, rank: true, supervisorId: true },
+/* =====================================================================================
+   Schema-aware helpers (current DB model)
+   - “L1” (top tenant rank) == TENANT_ADMIN in TenantMembership
+   - Supervisor mapping is stored on TenantMembership.supervisorId (userId of an L4 manager)
+   ===================================================================================== */
+
+async function countActiveTenantAdmins(tx: Tx, tenantId: string): Promise<number> {
+  return tx.tenantMembership.count({
+    where: {
+      tenantId,
+      role: "TENANT_ADMIN",
+      isActive: true,
+      deletedAt: null,
+    },
   });
 }
 
-async function countActiveL1(tx: Tx, tenantId: string) {
-  return tx.user.count({ where: { tenantId, rank: 1, active: true } });
-}
-
-async function getUser(tx: Tx, userId: string) {
-  return tx.user.findUnique({
-    where: { id: userId },
+async function getMembershipByUserTenant(
+  tx: Tx,
+  userId: string,
+  tenantId: string
+): Promise<
+  | {
+      userId: string;
+      tenantId: string;
+      role: TenantMemberRole;
+      isActive: boolean;
+      deletedAt: Date | null;
+      supervisorId: string | null;
+    }
+  | null
+> {
+  return tx.tenantMembership.findUnique({
+    where: { userId_tenantId: { userId, tenantId } as any },
     select: {
-      id: true,
+      userId: true,
       tenantId: true,
-      rank: true,
-      active: true,
+      role: true,
+      isActive: true,
+      deletedAt: true,
       supervisorId: true,
     },
   });
 }
 
+async function getActiveManagerUserIds(tx: Tx, tenantId: string): Promise<string[]> {
+  const rows = await tx.tenantMembership.findMany({
+    where: {
+      tenantId,
+      role: "MANAGER",
+      isActive: true,
+      deletedAt: null,
+    },
+    select: { userId: true },
+    orderBy: { user: { name: "asc" } },
+  });
+  return rows.map((r) => r.userId);
+}
+
+/* =====================================================================================
+   Validators
+   ===================================================================================== */
+
 /**
- * Enforce: exactly one active tenant L1 (rank=1) per tenant.
+ * Enforce: exactly one active tenant L1 (TENANT_ADMIN) per tenant.
  * Throws RbacError('roles.singleL1Violation') if count !== 1.
  */
 export async function assertSingleTenantL1(
   tenantId: string,
   tx: Tx = prisma
 ): Promise<void> {
-  const count = await countActiveL1(tx, tenantId);
+  const count = await countActiveTenantAdmins(tx, tenantId);
   if (count !== 1) {
     throw new RbacError("roles.singleL1Violation", { tenantId, count });
   }
 }
 
 /**
- * Validate supervisor invariants for a user draft (create/update).
- * - For tenant users with rank >= 2, supervisor is REQUIRED.
- * - Supervisor must be same tenant and higher authority (lower rank number).
- * - No cycles in the chain (walk up supervisors).
+ * Validate supervisor invariants for a user draft (create/update) against current schema.
+ * - Supervisor mapping applies to MEMBERS (L5). Managers/Admins must not point to supervisors.
+ * - When provided, supervisor must be an active MANAGER in the same tenant.
+ * - No self-reference and no cycles (walk up supervisor chain defensively).
  *
- * Pass the "draft" values that will be persisted (not necessarily what is currently in DB).
- * If userId is provided, cycle detection ensures we don't point (directly/indirectly) to self.
+ * Pass the values that will be persisted (not necessarily current DB state).
  */
 export async function validateSupervisorRule(
   draft: {
-    userId?: string | null;
-    tenantId: string | null;
-    rank: number | null;
-    supervisorId: string | null;
-    active?: boolean | null;
+    tenantId: string;
+    userId?: string | null; // for cycle checks (updates)
+    role: TenantMemberRole | null; // role to be saved
+    supervisorId: string | null; // userId of supervisor (MANAGER) or null
   },
   tx: Tx = prisma
 ): Promise<void> {
-  const tenantId = draft.tenantId ?? null;
-  const rank = draft.rank ?? null;
-  const supervisorId = draft.supervisorId ?? null;
+  const { tenantId, userId, role, supervisorId } = draft;
 
-  // Platform users (no tenantId) are excluded from supervisor logic.
-  if (!tenantId) return;
-
-  // L2+ must have a supervisor.
-  if (rank !== null && rank >= 2 && !supervisorId) {
-    throw new RbacError("roles.supervisorRequired", { tenantId, rank });
-  }
-
-  if (!supervisorId) return; // No supervisor to validate (allowed for L1).
-
-  const sup = await getUser(tx, supervisorId);
-  if (!sup) {
-    // Treat missing supervisor as "not same tenant" to avoid leaking existence info.
-    throw new RbacError("roles.supervisorSameTenant", { tenantId });
-  }
-
-  if (sup.tenantId !== tenantId) {
-    throw new RbacError("roles.supervisorSameTenant", { tenantId });
-  }
-
-  // Supervisor must be higher authority (lower rank number).
-  if (rank !== null && sup.rank >= rank) {
+  // Only MEMBERS can/should have a supervisor
+  if (role && role !== "MEMBER" && supervisorId) {
     throw new RbacError("roles.supervisorMustBeHigher", {
-      supervisorId,
-      supervisorRank: sup.rank,
-      rank,
+      // Using this key to indicate “not allowed to have a supervisor at this rank”
+      supervisorRank: "MANAGER",
+      rank: role,
     });
   }
 
-  // No cycles: walk up the chain from supervisor → ... → must not hit userId
-  if (draft.userId) {
+  // For MEMBERS: supervisor is required
+  if (role === "MEMBER" && !supervisorId) {
+    throw new RbacError("roles.supervisorRequired", { tenantId, role });
+  }
+
+  // If no supervisor to validate, we're done
+  if (!supervisorId) return;
+
+  // Validate supervisor membership
+  const supMem = await getMembershipByUserTenant(tx, supervisorId, tenantId);
+  if (!supMem) {
+    // Avoid leaking cross-tenant existence → treat as same-tenant violation
+    throw new RbacError("roles.supervisorSameTenant", { tenantId });
+  }
+  if (supMem.tenantId !== tenantId) {
+    throw new RbacError("roles.supervisorSameTenant", { tenantId });
+  }
+  // Supervisor must be an active MANAGER
+  if (!supMem.isActive || supMem.deletedAt || supMem.role !== "MANAGER") {
+    throw new RbacError("roles.supervisorMustBeHigher", {
+      supervisorId,
+      supervisorRole: supMem.role,
+      required: "MANAGER",
+    });
+  }
+
+  // No self-reference / cycles (defensive; chain depth is tiny in current model)
+  if (userId) {
     let cursor: string | null | undefined = supervisorId;
-    const seen = new Set<string>([draft.userId]);
-    // Hard stop guard (depth limit) to avoid infinite loops on corrupted data
-    for (let i = 0; i < 50 && cursor; i++) {
+    const seen = new Set<string>([userId]); // if we touch the target → cycle
+    for (let i = 0; i < 20 && cursor; i++) {
       if (seen.has(cursor)) {
         throw new RbacError("roles.supervisorNoCycles", { atUserId: cursor });
       }
       seen.add(cursor);
-      const u = await getUser(tx, cursor);
+      const u = await getMembershipByUserTenant(tx, cursor, tenantId);
       if (!u) break;
       cursor = u.supervisorId;
     }
@@ -138,44 +176,42 @@ export async function validateSupervisorRule(
 }
 
 /**
- * Reassign reports on supervisor deactivation.
- * - If the supervisor has a manager → reassign reports to that manager.
- * - Else → reassign reports to the tenant's active L1.
- * Returns number of affected users.
- *
- * Throws:
- * - roles.tenantL1Missing → if no fallback L1 can be found.
- * - roles.singleL1Violation → if tenant has broken L1 invariant.
+ * Reassign reports when a MANAGER (supervisor) is deactivated.
+ * - Prefer another active MANAGER in the same tenant.
+ * - If none exist, clear supervisor (UI should prompt to reassign later).
+ * Returns: { reassignedCount }
  */
 export async function reassignOnSupervisorDeactivation(
-  supervisorId: string,
+  supervisorUserId: string,
+  tenantId: string,
   tx: Tx = prisma
 ): Promise<{ reassignedCount: number }> {
-  const sup = await getUser(tx, supervisorId);
-  if (!sup || !sup.tenantId) {
-    // Nothing to do for platform or non-existent users.
-    return { reassignedCount: 0 };
-  }
+  // Find a fallback MANAGER in the same tenant (excluding the deactivated one)
+  const candidates = (await getActiveManagerUserIds(tx, tenantId)).filter(
+    (id) => id !== supervisorUserId
+  );
 
-  // Determine fallback: supervisor's manager or the L1 of the tenant.
-  let fallbackManagerId = sup.supervisorId ?? null;
+  const fallbackId: string | null = candidates.length > 0 ? candidates[0] : null;
 
-  if (!fallbackManagerId) {
-    // Use tenant L1 as fallback
-    const l1 = await findActiveL1(tx, sup.tenantId);
-    if (!l1) {
-      throw new RbacError("roles.tenantL1Missing", { tenantId: sup.tenantId });
-    }
-    fallbackManagerId = l1.id;
-  }
-
-  const result = await tx.user.updateMany({
-    where: { supervisorId: sup.id, tenantId: sup.tenantId },
-    data: { supervisorId: fallbackManagerId },
+  const result = await tx.tenantMembership.updateMany({
+    where: {
+      tenantId,
+      supervisorId: supervisorUserId,
+      deletedAt: null,
+    },
+    data: { supervisorId: fallbackId },
   });
 
-  // Sanity check: keep the single L1 invariant healthy
-  await assertSingleTenantL1(sup.tenantId, tx);
+  // Note: We don’t enforce single-L1 here; this function is manager-focused.
+  // Callers performing L1 demotion/deactivation should enforce assertSingleTenantL1 separately.
+
+  // Provide a success code to surface a toast later
+  if (result.count > 0) {
+    throw new RbacError("roles.reassignmentComplete", {
+      reassignedCount: result.count,
+      fallbackUsed: fallbackId ? "manager" : "none",
+    });
+  }
 
   return { reassignedCount: result.count };
 }

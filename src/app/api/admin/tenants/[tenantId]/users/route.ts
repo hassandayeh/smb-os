@@ -3,13 +3,13 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUserId } from "@/lib/current-user";
 import { TenantMemberRole } from "@prisma/client";
-import {
-  getActorLevel,
-  type Level,
-  type TargetLevel,
-  canCreateUserWithRole,
-} from "@/lib/access";
+import { requireAccess } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
+import {
+  assertSingleTenantL1,
+  validateSupervisorRule,
+  RbacError,
+} from "@/lib/rbac/validators";
 
 // --- Local dev hasher (Keystone note: replace with bcrypt/argon2 in auth lib) ---
 async function hashPasswordDev(password: string) {
@@ -23,6 +23,7 @@ type CreateUserBody = {
   email?: string; // OPTIONAL; placeholder used if blank
   username?: string; // REQUIRED; normalized to slugish lowercase
   role?: "APP_ADMIN" | "TENANT_ADMIN" | "MANAGER" | "MEMBER";
+  supervisorId?: string | null; // REQUIRED when role === MEMBER; must be active MANAGER in same tenant
   redirectTo?: string; // optional redirect after creation
 };
 
@@ -31,13 +32,11 @@ function normalizeEmail(v: unknown) {
   if (typeof v !== "string") return "";
   return v.trim().toLowerCase();
 }
-
 function normalizeName(v: unknown) {
   if (typeof v !== "string") return "";
   const t = v.trim();
   return t.length ? t : "";
 }
-
 // username rules: lowercase, digits, hyphen, 3..30 chars
 function normalizeUsername(v: unknown) {
   if (typeof v !== "string") return "";
@@ -81,6 +80,10 @@ async function readBody(req: Request): Promise<CreateUserBody> {
       email: String(form.get("email") ?? ""),
       username: String(form.get("username") ?? ""),
       role: (form.get("role") as any) ?? undefined,
+      supervisorId:
+        (form.get("supervisorId") != null
+          ? String(form.get("supervisorId"))
+          : null) as string | null,
       redirectTo: String(form.get("redirectTo") ?? ""),
     };
   }
@@ -94,20 +97,24 @@ export async function POST(
 ) {
   const tenantId = params?.tenantId;
   if (!tenantId) {
-    return NextResponse.json({ error: "tenantId is required" }, { status: 400 });
+    // (kept shape, just a clearer key)
+    return NextResponse.json({ error: "errors.tenant.required" }, { status: 400 });
   }
 
   // Resolve actor
   const actorUserId = await getCurrentUserId();
   if (!actorUserId) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "errors.auth.required" }, { status: 401 });
   }
 
-  // Centralized level resolution (L1–L5)
-  const actorLevel: Level | null = await getActorLevel(actorUserId, tenantId);
-  if (!actorLevel) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  // Admin console is platform-only: restrict to L1/L2 via centralized guard
+  try {
+  // Admin console guard → pass the actor, the tenant in the URL, and a stable module key
+  await requireAccess({ userId: actorUserId, tenantId, moduleKey: "admin" });
+} catch {
+  return NextResponse.json({ error: "errors.forbidden" }, { status: 403 });
+}
+
 
   // Read & validate input
   const body = await readBody(req);
@@ -115,37 +122,14 @@ export async function POST(
   const email = normalizeEmail(body.email);
   const usernameRaw = normalizeUsername(body.username);
   const role = body.role;
+  const supervisorId =
+    body.supervisorId === undefined ? null : (body.supervisorId as string | null);
 
   if (!name) {
-    return NextResponse.json({ error: "name is required" }, { status: 400 });
+    return NextResponse.json({ error: "errors.user.name_required" }, { status: 400 });
   }
   if (!usernameRaw) {
-    return NextResponse.json({ error: "username is required" }, { status: 400 });
-  }
-
-  // Map role value to TargetLevel for centralized create guard
-  const requestedLevel: TargetLevel | null =
-    role === "APP_ADMIN"
-      ? "L2"
-      : isValidTenantRole(role)
-      ? role === "TENANT_ADMIN"
-        ? "L3"
-        : role === "MANAGER"
-        ? "L4"
-        : "L5"
-      : null;
-
-  // Keystone create guard — peer-block + matrix
-  const createDecision = await canCreateUserWithRole({
-    tenantId,
-    actorUserId,
-    requestedLevel,
-  });
-  if (!createDecision.allowed) {
-    return NextResponse.json(
-      { error: "forbidden", reason: createDecision.reason ?? "create.denied" },
-      { status: 403 }
-    );
+    return NextResponse.json({ error: "errors.user.username_required" }, { status: 400 });
   }
 
   try {
@@ -156,14 +140,13 @@ export async function POST(
     });
     if (taken) {
       return NextResponse.json(
-        { error: "username already taken in this tenant" },
+        { error: "errors.username.conflict.tenant" },
         { status: 409 }
       );
     }
 
     // 2) Check existing by (tenantId,email) if a real email was provided
     const hasRealEmail = !!email && !/@(?:^|\.)local$/i.test(email);
-
     let user =
       hasRealEmail
         ? await prisma.user.findUnique({
@@ -208,7 +191,10 @@ export async function POST(
           const target = Array.isArray(e?.meta?.target)
             ? e.meta.target.join(",")
             : "unique field";
-          return NextResponse.json({ error: `conflict on ${target}` }, { status: 409 });
+          return NextResponse.json(
+            { error: "errors.conflict.unique", meta: { target } },
+            { status: 409 }
+          );
         }
         throw e;
       }
@@ -233,7 +219,7 @@ export async function POST(
       } catch (e: any) {
         if (e?.code === "P2002") {
           return NextResponse.json(
-            { error: "username already taken in this tenant" },
+            { error: "errors.username.conflict.tenant" },
             { status: 409 }
           );
         }
@@ -241,7 +227,7 @@ export async function POST(
       }
     }
 
-    // 4) Apply role
+    // 4) Apply role (validators added, everything else preserved)
     let membership:
       | {
           id: string;
@@ -261,6 +247,28 @@ export async function POST(
       });
     } else if (isValidTenantRole(role)) {
       const roleEnum = toEnumRole(role);
+
+      // NEW: supervisor validation (MEMBER requires valid MANAGER; others must not carry a supervisor)
+      try {
+        await validateSupervisorRule(
+          {
+            tenantId,
+            userId: user.id,
+            role: roleEnum,
+            supervisorId: roleEnum === "MEMBER" ? supervisorId ?? null : null,
+          }
+        );
+      } catch (e) {
+        if (e instanceof RbacError) {
+          const status = e.code === "roles.singleL1Violation" ? 409 : 400;
+          return NextResponse.json(
+            e.meta ? { error: e.code, meta: e.meta } : { error: e.code },
+            { status }
+          );
+        }
+        throw e;
+      }
+
       const existingMembership = await prisma.tenantMembership.findFirst({
         where: { tenantId, userId: user.id },
         select: { id: true, isActive: true, role: true },
@@ -269,7 +277,11 @@ export async function POST(
       if (existingMembership) {
         membership = await prisma.tenantMembership.update({
           where: { id: existingMembership.id },
-          data: { role: roleEnum, isActive: true },
+          data: {
+            role: roleEnum,
+            isActive: true,
+            supervisorId: roleEnum === "MEMBER" ? supervisorId ?? null : null,
+          },
           select: {
             id: true,
             tenantId: true,
@@ -285,6 +297,7 @@ export async function POST(
             userId: user.id,
             role: roleEnum,
             isActive: true,
+            supervisorId: roleEnum === "MEMBER" ? supervisorId ?? null : null,
           },
           select: {
             id: true,
@@ -295,9 +308,24 @@ export async function POST(
           },
         });
       }
+
+      // NEW: enforce single L1 when assigning TENANT_ADMIN
+      if (roleEnum === "TENANT_ADMIN") {
+        try {
+          await assertSingleTenantL1(tenantId);
+        } catch (e) {
+          if (e instanceof RbacError) {
+            return NextResponse.json(
+              e.meta ? { error: e.code, meta: e.meta } : { error: e.code },
+              { status: 409 }
+            );
+          }
+          throw e;
+        }
+      }
     } else {
       return NextResponse.json(
-        { error: "role must be APP_ADMIN | TENANT_ADMIN | MANAGER | MEMBER" },
+        { error: "errors.role.invalid" },
         { status: 400 }
       );
     }
@@ -329,6 +357,6 @@ export async function POST(
     return NextResponse.json({ ok: true, user, membership }, { status: 201 });
   } catch (err) {
     console.error("POST /admin/tenants/[tenantId]/users error:", err);
-    return NextResponse.json({ error: "failed to create user" }, { status: 500 });
+    return NextResponse.json({ error: "errors.user.create_failed" }, { status: 500 });
   }
 }
